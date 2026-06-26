@@ -8,7 +8,7 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 
-from pick_action.action import PickSequence
+from pick_action_interfaces.action import PickSequence
 
 
 class TriggerPickAction(Node):

@@ -14,7 +14,7 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String
 
-from pick_action.action import PickSequence
+from pick_action_interfaces.action import PickSequence
 
 
 class PickActionServer(Node):
@@ -88,7 +88,7 @@ class PickActionServer(Node):
 
     def _init_tool_client(self) -> None:
         try:
-            from pick_action.srv import ToolAction
+            from pick_action_interfaces.srv import ToolAction
             self._tool_client = self.create_client(
                 ToolAction,
                 self.get_parameter('tool_service').value,
@@ -150,7 +150,7 @@ class PickActionServer(Node):
             self.get_logger().error('Tool service unavailable')
             return False
 
-        from pick_action.srv import ToolAction
+        from pick_action_interfaces.srv import ToolAction
         req = ToolAction.Request()
         req.action = action
         req.args = args[:4] + [0.0] * max(0, 4 - len(args))

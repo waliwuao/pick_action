@@ -1,0 +1,15 @@
+# LiDAR-based autonomous pick sequence.
+#
+# Orchestrates: LiDAR recognition → X-alignment (prepare) →
+#   forward approach → grasp → lift → retreat → lower.
+#
+# Goal
+int8 expected_count 3
+---
+# Result
+bool success
+string message
+---
+# Feedback: current state and elapsed time.
+string state
+float32 elapsed_s

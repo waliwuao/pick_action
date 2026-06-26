@@ -1,0 +1,32 @@
+pick_action_server:
+  ros__parameters:
+    # Topics
+    result_topic: /spear_recognition/result
+    tool_service: /ares_tool_node/tool_action
+    chassis_topic: /t0x0101_
+    lift_topic: /t0x0102_
+    status_topic: /pick_action/status
+
+    # ---- X alignment (prepare) ----
+    prepare_offset_m: 0.3
+    direction_sign_x: -1.0
+    deadband_x_m: 0.005
+    prepare_timeout_ms: 20000
+
+    # ---- Forward approach ----
+    forward_speed_mps: 0.2
+    forward_duration_s: 4.0
+    direction_sign_y: -1.0
+
+    # ---- Grasp ----
+    grasp_timeout_ms: 15000
+
+    # ---- Lift / Lower (one-shot position commands) ----
+    lift_height_m: [0.10, 0.10, 0.10, 0.10]
+
+    # ---- Retreat ----
+    retreat_speed_mps: 0.2
+    retreat_duration_s: 2.0
+
+    # ---- Loop ----
+    publish_rate_hz: 100.0

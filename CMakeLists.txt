@@ -6,26 +6,11 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
-find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/PickSequence.action"
   "srv/ToolAction.srv"
-)
-
-ament_python_install_package(${PROJECT_NAME})
-
-install(DIRECTORY config launch
-  DESTINATION share/${PROJECT_NAME}
-)
-
-install(PROGRAMS
-  scripts/trigger_pick.py
-  scripts/pick_action_server_node
-  scripts/recognition_node
-  scripts/synthetic_scan_node
-  DESTINATION lib/${PROJECT_NAME}
 )
 
 ament_export_dependencies(rosidl_default_runtime)

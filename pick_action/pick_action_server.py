@@ -88,7 +88,7 @@ class PickActionServer(Node):
 
     def _init_tool_client(self) -> None:
         try:
-            from ares_tool_interfaces.srv import ToolAction
+            from pick_action.srv import ToolAction
             self._tool_client = self.create_client(
                 ToolAction,
                 self.get_parameter('tool_service').value,
@@ -96,7 +96,7 @@ class PickActionServer(Node):
             self.get_logger().info('ToolAction client created')
         except Exception as exc:
             self.get_logger().warn(
-                'ares_tool_interfaces not available (%s); tool disabled' % exc
+                'ToolAction service not available (%s); tool disabled' % exc
             )
 
     def _ensure_tool_available(self) -> bool:
@@ -150,7 +150,7 @@ class PickActionServer(Node):
             self.get_logger().error('Tool service unavailable')
             return False
 
-        from ares_tool_interfaces.srv import ToolAction
+        from pick_action.srv import ToolAction
         req = ToolAction.Request()
         req.action = action
         req.args = args[:4] + [0.0] * max(0, 4 - len(args))

@@ -3,7 +3,7 @@
 <package format="3">
   <name>pick_action</name>
   <version>0.1.0</version>
-  <description>LiDAR-based autonomous pick sequence action: align X, approach, grasp, lift, retreat, lower.</description>
+  <description>LiDAR-based autonomous pick sequence: recognition, approach, grasp, lift, retreat, lower.</description>
   <maintainer email="charlie@example.com">charlie</maintainer>
   <license>MIT</license>
 
@@ -13,10 +13,13 @@
 
   <depend>rclpy</depend>
   <depend>action_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>sensor_msgs_py</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
-  <depend>builtin_interfaces</depend>
-  <depend>ares_tool_interfaces</depend>
+  <depend>visualization_msgs</depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>
 

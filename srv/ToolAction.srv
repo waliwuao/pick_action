@@ -1,0 +1,13 @@
+# Request: dispatch one tool action to ares_r2_tool over USB.
+# Protocol: ARES dual_protocol SYNC frame, head=0x5A5A,
+#           arm send/recv id = 0x0211/0x0221, spear send/recv id = 0x0212/0x0222,
+#           payload = action(uint32) + 4 reserved float32(=0).
+string action         # connector: prepare | grasp | dock_extend
+                      # arm: arm_grasp | arm_get_body | arm_place_mid | arm_place_high
+                      # arm_grasp returns after grasp; storage continues automatically on MCU.
+float32[4] args       # 透传到帧的 4 个预留 float。prepare: args[0]=length(m)
+---
+# Response (returned when the action completes, or on error/timeout).
+bool   success        # true when the matching feedback frame was received
+int32  ret            # 0 = completed; negative errno (-EINVAL unknown, -ETIMEDOUT, -EIO)
+string message        # human readable result / error description

@@ -11,6 +11,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/PickSequence.action"
+  "srv/ToolAction.srv"
 )
 
 ament_python_install_package(${PROJECT_NAME})
@@ -22,6 +23,8 @@ install(DIRECTORY config launch
 install(PROGRAMS
   scripts/trigger_pick.py
   scripts/pick_action_server_node
+  scripts/recognition_node
+  scripts/synthetic_scan_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

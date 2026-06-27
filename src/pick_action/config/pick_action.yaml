@@ -16,7 +16,7 @@ pick_action_server:
     # ---- Forward approach ----
     forward_speed_mps: 0.2
     forward_duration_s: 4.0
-    direction_sign_y: -1.0
+    direction_sign_y: 1.0
 
     # ---- Grasp ----
     grasp_timeout_ms: 15000

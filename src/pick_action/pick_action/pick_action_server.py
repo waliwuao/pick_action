@@ -40,7 +40,7 @@ class PickActionServer(Node):
 
         self.declare_parameter('grasp_timeout_ms', 15000)
 
-        self.declare_parameter('lift_height_m', [0.10, 0.10, 0.10, 0.10])
+        self.declare_parameter('lift_height_mm', [100.0, 100.0, 100.0, 100.0])
 
         self.declare_parameter('retreat_speed_mps', 0.2)
         self.declare_parameter('retreat_duration_s', 2.0)
@@ -303,7 +303,7 @@ class PickActionServer(Node):
 
         # ---- LIFT ----
         feedback('LIFT')
-        heights = list(self.get_parameter('lift_height_m').value)
+        heights = list(self.get_parameter('lift_height_mm').value)
         self.get_logger().info('Lifting: %s' % heights)
         self._publish_status('LIFT', tid, x_m, y_m)
         msg = Float32MultiArray()

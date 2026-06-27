@@ -21,8 +21,8 @@ pick_action_server:
     # ---- Grasp ----
     grasp_timeout_ms: 15000
 
-    # ---- Lift / Lower (one-shot position commands) ----
-    lift_height_m: [0.10, 0.10, 0.10, 0.10]
+    # ---- Lift / Lower (one-shot position commands, units: mm) ----
+    lift_height_mm: [100.0, 100.0, 100.0, 100.0]
 
     # ---- Retreat ----
     retreat_speed_mps: 0.2

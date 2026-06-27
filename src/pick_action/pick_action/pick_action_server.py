@@ -88,7 +88,7 @@ class PickActionServer(Node):
 
     def _init_tool_client(self) -> None:
         try:
-            from pick_action_interfaces.srv import ToolAction
+            from ares_tool_interfaces.srv import ToolAction
             self._tool_client = self.create_client(
                 ToolAction,
                 self.get_parameter('tool_service').value,
@@ -150,33 +150,26 @@ class PickActionServer(Node):
             self.get_logger().error('Tool service unavailable')
             return False
 
-        from pick_action_interfaces.srv import ToolAction
+        from ares_tool_interfaces.srv import ToolAction
         req = ToolAction.Request()
         req.action = action
         req.args = args[:4] + [0.0] * max(0, 4 - len(args))
 
+        timeout_s = timeout_ms / 1000.0
         future = self._tool_client.call_async(req)
-        done_event = threading.Event()
-        result_success = False
+        rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_s)
 
-        def _on_done(fut):
-            nonlocal result_success
-            if fut.result() is not None:
-                r = fut.result()
-                result_success = r.success
-                if not r.success:
-                    self.get_logger().warn(
-                        'Tool %s failed: ret=%d msg="%s"'
-                        % (action, r.ret, r.message)
-                    )
-            else:
-                self.get_logger().error('Tool %s: future resolved with no result' % action)
-            done_event.set()
-
-        future.add_done_callback(_on_done)
-        if done_event.wait(timeout=timeout_ms / 1000.0):
-            return result_success
-        self.get_logger().error('Tool %s timed out (%.1f s)' % (action, timeout_ms / 1000.0))
+        if future.done() and future.result() is not None:
+            r = future.result()
+            if r.success:
+                self.get_logger().info('Tool %s completed' % action)
+                return True
+            self.get_logger().warn(
+                'Tool %s failed: ret=%d msg="%s"'
+                % (action, r.ret, r.message)
+            )
+            return False
+        self.get_logger().error('Tool %s timed out (%.1f s)' % (action, timeout_s))
         return False
 
     def _run_timed_publish(self, speed: float, duration_s: float,

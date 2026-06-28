@@ -56,7 +56,7 @@ ros2 action send_goal /pick_action pick_action_interfaces/action/PickSequence \
 | `ALIGN_X` | Align connector X via prepare service |
 | `FORWARD` | Chassis forward 0.2 m/s x 4s |
 | `GRASP` | Close gripper |
-| `LIFT` | Raise chassis (publish lift_height_mm to /t0x0102_) |
+| `LIFT` | Raise chassis (publish lift_height_mm to /t0x0112_) |
 | `RETREAT` | Chassis reverse 0.2 m/s x 2s |
 | `LOWER` | Lower chassis |
 | `DONE` | Complete |

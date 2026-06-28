@@ -25,8 +25,8 @@ class PickActionServer(Node):
 
         self.declare_parameter('result_topic', '/spear_recognition/result')
         self.declare_parameter('tool_service', '/ares_tool_node/tool_action')
-        self.declare_parameter('chassis_topic', '/t0x0101_')
-        self.declare_parameter('lift_topic', '/t0x0102_')
+        self.declare_parameter('chassis_topic', '/t0x0111_')
+        self.declare_parameter('lift_topic', '/t0x0112_')
         self.declare_parameter('status_topic', '/pick_action/status')
 
         self.declare_parameter('prepare_offset_m', 0.3)
@@ -40,7 +40,8 @@ class PickActionServer(Node):
 
         self.declare_parameter('grasp_timeout_ms', 15000)
 
-        self.declare_parameter('lift_height_mm', [100.0, 100.0, 100.0, 100.0])
+        self.declare_parameter('lift_height_mm', [70.0, 70.0, 70.0, 70.0])
+        self.declare_parameter('lower_height_mm', [20.0, 20.0, 20.0, 20.0])
 
         self.declare_parameter('retreat_speed_mps', 0.2)
         self.declare_parameter('retreat_duration_s', 2.0)
@@ -327,7 +328,7 @@ class PickActionServer(Node):
 
         # ---- LOWER ----
         feedback('LOWER')
-        lower_heights = [-h for h in heights]
+        lower_heights = list(self.get_parameter('lower_height_mm').value)
         self.get_logger().info('Lowering: %s' % lower_heights)
         self._publish_status('LOWER', tid, x_m, y_m)
         msg = Float32MultiArray()

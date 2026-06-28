@@ -35,7 +35,7 @@ class PickActionServer(Node):
         self.declare_parameter('prepare_timeout_ms', 20000)
 
         self.declare_parameter('forward_speed_mps', 0.2)
-        self.declare_parameter('forward_duration_s', 4.0)
+        self.declare_parameter('forward_duration_s', 2.0)
         self.declare_parameter('direction_sign_y', -1.0)
 
         self.declare_parameter('grasp_timeout_ms', 15000)

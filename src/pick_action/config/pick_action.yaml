@@ -6,6 +6,8 @@ pick_action_server:
     chassis_topic: /t0x0111_
     lift_topic: /t0x0112_
     status_topic: /pick_action/status
+    motion_action_name: /move_to_pose
+    relocation_topic: /transformed/pose
 
     # ---- X alignment (prepare) ----
     prepare_offset_m: 0.3
@@ -28,6 +30,14 @@ pick_action_server:
     # ---- Retreat ----
     retreat_speed_mps: 0.2
     retreat_duration_s: 2.0
+    retreat_distance_m: 0.4
+    retreat_motion_timeout_sec: 10.0
+    retreat_motion_pid_profile: 0
+    retreat_motion_max_vel: 0.0
+    retreat_motion_max_wz: 0.0
+    retreat_pose_timeout_sec: 1.0
+    retreat_height_mm: []
+    height_publish_rate_hz: 20.0
 
     # ---- Loop ----
     publish_rate_hz: 100.0

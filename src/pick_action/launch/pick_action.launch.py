@@ -22,6 +22,7 @@ def generate_launch_description():
 
     port_name = LaunchConfiguration('port_name')
     use_synthetic = LaunchConfiguration('use_synthetic')
+    relocation_topic = LaunchConfiguration('relocation_topic')
 
     recognition_config = os.path.join(pick_share, 'config', 'recognition.yaml')
     pick_config = os.path.join(pick_share, 'config', 'pick_action.yaml')
@@ -41,6 +42,11 @@ def generate_launch_description():
             'expected_count',
             default_value='3',
             description='Number of expected targets',
+        ),
+        DeclareLaunchArgument(
+            'relocation_topic',
+            default_value='/transformed/pose',
+            description='Relocalized PoseStamped topic used for retreat motion',
         ),
 
         # Real LiDAR driver
@@ -76,6 +82,6 @@ def generate_launch_description():
             executable='pick_action_server_node',
             name='pick_action_server',
             output='screen',
-            parameters=[pick_config],
+            parameters=[pick_config, {'relocation_topic': relocation_topic}],
         ),
     ])

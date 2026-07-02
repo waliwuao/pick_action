@@ -5,11 +5,14 @@ grasp → lift → retreat → lower.
 """
 
 import json
+import math
 import threading
 import time
 
 import rclpy
-from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from action_of_motion_interfaces.action import MoveToPose
+from geometry_msgs.msg import PoseStamped
+from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String
@@ -28,6 +31,8 @@ class PickActionServer(Node):
         self.declare_parameter('chassis_topic', '/t0x0111_')
         self.declare_parameter('lift_topic', '/t0x0112_')
         self.declare_parameter('status_topic', '/pick_action/status')
+        self.declare_parameter('motion_action_name', '/move_to_pose')
+        self.declare_parameter('relocation_topic', '/transformed/pose')
 
         self.declare_parameter('prepare_offset_m', 0.3)
         self.declare_parameter('direction_sign_x', -1.0)
@@ -45,11 +50,22 @@ class PickActionServer(Node):
 
         self.declare_parameter('retreat_speed_mps', 0.2)
         self.declare_parameter('retreat_duration_s', 2.0)
+        self.declare_parameter('retreat_distance_m', 0.4)
+        self.declare_parameter('retreat_motion_timeout_sec', 10.0)
+        self.declare_parameter('retreat_motion_pid_profile', 0)
+        self.declare_parameter('retreat_motion_max_vel', 0.0)
+        self.declare_parameter('retreat_motion_max_wz', 0.0)
+        self.declare_parameter('retreat_pose_timeout_sec', 1.0)
+        self.declare_parameter('height_publish_rate_hz', 20.0)
+        self.declare_parameter('retreat_height_mm', [])
 
         self.declare_parameter('publish_rate_hz', 100.0)
 
         self._latest_recognition: dict | None = None
         self._recognition_lock = threading.Lock()
+        self._latest_pose: PoseStamped | None = None
+        self._latest_pose_time: float | None = None
+        self._pose_lock = threading.Lock()
 
         self._chassis_pub = self.create_publisher(
             Float32MultiArray,
@@ -71,6 +87,17 @@ class PickActionServer(Node):
             self.get_parameter('result_topic').value,
             self._recognition_callback,
             10,
+        )
+        self._pose_subscription = self.create_subscription(
+            PoseStamped,
+            self.get_parameter('relocation_topic').value,
+            self._pose_callback,
+            10,
+        )
+        self._motion_client = ActionClient(
+            self,
+            MoveToPose,
+            self.get_parameter('motion_action_name').value,
         )
 
         self._action_server = ActionServer(
@@ -112,6 +139,11 @@ class PickActionServer(Node):
                 self._latest_recognition = data
         except (TypeError, json.JSONDecodeError):
             pass
+
+    def _pose_callback(self, message: PoseStamped) -> None:
+        with self._pose_lock:
+            self._latest_pose = message
+            self._latest_pose_time = time.monotonic()
 
     def _goal_callback(self, goal_request: PickSequence.Goal) -> GoalResponse:
         self.get_logger().info('Received goal: expected_count=%d' % goal_request.expected_count)
@@ -190,6 +222,136 @@ class PickActionServer(Node):
 
         msg.data = [0.0, 0.0, 0.0]
         self._chassis_pub.publish(msg)
+
+    @staticmethod
+    def _normalize_angle(angle: float) -> float:
+        return math.atan2(math.sin(angle), math.cos(angle))
+
+    @staticmethod
+    def _yaw_from_pose(pose: PoseStamped) -> float:
+        q = pose.pose.orientation
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        return math.atan2(siny_cosp, cosy_cosp)
+
+    def _current_pose(self) -> PoseStamped | None:
+        timeout_s = float(self.get_parameter('retreat_pose_timeout_sec').value)
+        with self._pose_lock:
+            pose = self._latest_pose
+            pose_time = self._latest_pose_time
+        if pose is None or pose_time is None:
+            return None
+        if timeout_s > 0.0 and time.monotonic() - pose_time > timeout_s:
+            return None
+        return pose
+
+    def _retreat_height_values(self, lift_heights: list[float]) -> list[float]:
+        configured = list(self.get_parameter('retreat_height_mm').value)
+        if len(configured) == 4 and all(math.isfinite(float(v)) for v in configured):
+            return [float(v) for v in configured]
+        return [-float(h) for h in lift_heights[:4]]
+
+    def _publish_height(self, heights: list[float]) -> None:
+        msg = Float32MultiArray()
+        msg.data = [float(h) for h in heights[:4]]
+        self._lift_pub.publish(msg)
+
+    def _wait_future_with_height(self, future, timeout_s: float,
+                                 heights: list[float], goal_handle,
+                                 start_time: float) -> str:
+        rate_hz = float(self.get_parameter('height_publish_rate_hz').value)
+        period_s = 1.0 / rate_hz if rate_hz > 0.0 else 0.05
+        next_publish = 0.0
+        while rclpy.ok() and not future.done():
+            now = time.monotonic()
+            if goal_handle.is_cancel_requested:
+                return 'cancelled'
+            if timeout_s > 0.0 and now - start_time > timeout_s:
+                return 'timeout'
+            if now >= next_publish:
+                self._publish_height(heights)
+                next_publish = now + period_s
+            time.sleep(min(0.02, max(0.0, next_publish - now)))
+        self._publish_height(heights)
+        return 'done'
+
+    def _run_motion_retreat(self, goal_handle, heights: list[float]) -> tuple[bool, str]:
+        pose = self._current_pose()
+        if pose is None:
+            return False, 'No fresh relocation pose for retreat'
+
+        if not self._motion_client.wait_for_server(timeout_sec=3.0):
+            return False, 'MoveToPose action server not available for retreat'
+
+        current_x = float(pose.pose.position.x)
+        current_y = float(pose.pose.position.y)
+        current_yaw = self._yaw_from_pose(pose)
+        distance = float(self.get_parameter('retreat_distance_m').value)
+        target_x = current_x - distance * math.cos(current_yaw)
+        target_y = current_y - distance * math.sin(current_yaw)
+        target_yaw = self._normalize_angle(current_yaw - math.pi / 2.0)
+
+        motion_goal = MoveToPose.Goal()
+        motion_goal.x = target_x
+        motion_goal.y = target_y
+        motion_goal.yaw_deg = math.degrees(target_yaw)
+        motion_goal.pid_profile = int(
+            self.get_parameter('retreat_motion_pid_profile').value
+        )
+        motion_goal.max_vel = float(
+            self.get_parameter('retreat_motion_max_vel').value
+        )
+        motion_goal.max_wz = float(
+            self.get_parameter('retreat_motion_max_wz').value
+        )
+
+        timeout_s = float(self.get_parameter('retreat_motion_timeout_sec').value)
+        start_time = time.monotonic()
+        self.get_logger().info(
+            'Retreat Motion: from=(%.3f, %.3f, %.1f deg) '
+            'target=(%.3f, %.3f, %.1f deg), height=%s',
+            current_x,
+            current_y,
+            math.degrees(current_yaw),
+            target_x,
+            target_y,
+            motion_goal.yaw_deg,
+            heights,
+        )
+
+        send_future = self._motion_client.send_goal_async(motion_goal)
+        state = self._wait_future_with_height(
+            send_future, timeout_s, heights, goal_handle, start_time
+        )
+        if state != 'done':
+            return False, 'Retreat Motion %s before goal accepted' % state
+
+        motion_goal_handle = send_future.result()
+        if motion_goal_handle is None or not motion_goal_handle.accepted:
+            return False, 'Retreat Motion goal rejected'
+
+        result_future = motion_goal_handle.get_result_async()
+        state = self._wait_future_with_height(
+            result_future, timeout_s, heights, goal_handle, start_time
+        )
+        if state == 'cancelled':
+            motion_goal_handle.cancel_goal_async()
+            return False, 'cancelled'
+        if state == 'timeout':
+            motion_goal_handle.cancel_goal_async()
+            return False, 'Retreat Motion timed out'
+
+        result_response = result_future.result()
+        if (
+            result_response is None
+            or result_response.result is None
+            or not result_response.result.success
+        ):
+            message = ''
+            if result_response is not None and result_response.result is not None:
+                message = result_response.result.message
+            return False, message or 'Retreat Motion failed'
+        return True, result_response.result.message
 
     def _publish_status(self, state: str, target_id: int,
                         x_m: float, y_m: float) -> None:
@@ -304,7 +466,7 @@ class PickActionServer(Node):
 
         # ---- LIFT ----
         feedback('LIFT')
-        heights = list(self.get_parameter('lift_height_mm').value)
+        heights = [float(h) for h in self.get_parameter('lift_height_mm').value]
         self.get_logger().info('Lifting: %s' % heights)
         self._publish_status('LIFT', tid, x_m, y_m)
         msg = Float32MultiArray()
@@ -314,13 +476,17 @@ class PickActionServer(Node):
 
         # ---- RETREAT ----
         feedback('RETREAT')
-        retreat_speed = -sign_y * float(self.get_parameter('retreat_speed_mps').value)
-        retreat_duration = float(self.get_parameter('retreat_duration_s').value)
-        self.get_logger().info(
-            'Retreat: %.2f m/s for %.1f s' % (retreat_speed, retreat_duration)
-        )
+        retreat_heights = self._retreat_height_values(heights)
         self._publish_status('RETREAT', tid, x_m, y_m)
-        self._run_timed_publish(retreat_speed, retreat_duration, goal_handle)
+        motion_success, motion_message = self._run_motion_retreat(
+            goal_handle, retreat_heights
+        )
+        if not motion_success:
+            goal_handle.abort()
+            return PickSequence.Result(
+                success=False,
+                message=motion_message,
+            )
 
         if goal_handle.is_cancel_requested:
             goal_handle.abort()
@@ -328,12 +494,10 @@ class PickActionServer(Node):
 
         # ---- LOWER ----
         feedback('LOWER')
-        lower_heights = list(self.get_parameter('lower_height_mm').value)
-        self.get_logger().info('Lowering: %s' % lower_heights)
+        lower_heights = retreat_heights
+        self.get_logger().info('Lowering confirmation: %s' % lower_heights)
         self._publish_status('LOWER', tid, x_m, y_m)
-        msg = Float32MultiArray()
-        msg.data = lower_heights
-        self._lift_pub.publish(msg)
+        self._publish_height(lower_heights)
         time.sleep(0.2)
 
         # ---- DONE ----

@@ -6,8 +6,6 @@ pick_action_server:
     chassis_topic: /t0x0111_
     lift_topic: /t0x0112_
     status_topic: /pick_action/status
-    motion_action_name: /move_to_pose
-    relocation_topic: /transformed/pose
 
     # ---- X alignment (prepare) ----
     prepare_offset_m: 0.3
@@ -17,7 +15,7 @@ pick_action_server:
 
     # ---- Forward approach ----
     forward_speed_mps: 0.2
-    forward_duration_s: 2.0
+    forward_duration_s: 1.8
     direction_sign_y: -1.0
 
     # ---- Grasp ----
@@ -25,19 +23,11 @@ pick_action_server:
 
     # ---- Lift / Lower (one-shot position commands, units: mm) ----
     lift_height_mm: [70.0, 70.0, 70.0, 70.0]
-    lower_height_mm: [20.0, 20.0, 20.0, 20.0]
+    lower_height_mm: [28.0, 28.0, 28.0, 28.0]
 
     # ---- Retreat ----
     retreat_speed_mps: 0.2
-    retreat_duration_s: 2.0
-    retreat_distance_m: 0.4
-    retreat_motion_timeout_sec: 10.0
-    retreat_motion_pid_profile: 0
-    retreat_motion_max_vel: 0.0
-    retreat_motion_max_wz: 0.0
-    retreat_pose_timeout_sec: 1.0
-    retreat_height_mm: []
-    height_publish_rate_hz: 20.0
+    retreat_duration_s: 1.0
 
     # ---- Loop ----
     publish_rate_hz: 100.0

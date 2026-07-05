@@ -1,16 +1,13 @@
 pick_action_server:
   ros__parameters:
-    # Topics
-    alignment_mode: lidar_recognition
+    alignment_mode: odin_sensor_projection
+
     result_topic: /spear_recognition/result
     tool_service: /ares_tool_node/tool_action
     chassis_topic: /t0x0111_
     lift_topic: /t0x0112_
     status_topic: /pick_action/status
 
-    # ---- Odin + sensor projection mode ----
-    # Set alignment_mode to odin_sensor_projection to use these instead of
-    # /spear_recognition/result during VALIDATING and ALIGN_X.
     sensor_topic: /sensor_distances
     pose_topic: /odin1/relocation
     sensor_count: 8
@@ -19,41 +16,31 @@ pick_action_server:
     sensor_max_age_s: 0.5
     pose_max_age_s: 0.5
 
-    # Field-frame geometry used by correct_pose.py.
     field_origin_x_m: 0.0
     field_origin_y_m: 0.0
     gripper_forward_m: 0.0
     gripper_left_m: 0.0
     gripper_yaw_offset_rad: 0.0
 
-    # Target point in the same field frame. The server projects this point
-    # onto the gripper yaw line and uses the signed along-line offset for
-    # prepare alignment.
     projection_target_x_m: 0.0
     projection_target_y_m: 0.0
     projection_direction_sign: 1.0
 
-    # ---- X alignment (prepare) ----
     prepare_offset_m: 0.3
     direction_sign_x: -1.0
     deadband_x_m: 0.005
     prepare_timeout_ms: 20000
 
-    # ---- Forward approach ----
     forward_speed_mps: 0.2
     forward_duration_s: 1.8
     direction_sign_y: -1.0
 
-    # ---- Grasp ----
     grasp_timeout_ms: 15000
 
-    # ---- Lift / Lower (one-shot position commands, units: mm) ----
     lift_height_mm: [70.0, 70.0, 70.0, 70.0]
     lower_height_mm: [28.0, 28.0, 28.0, 28.0]
 
-    # ---- Retreat ----
     retreat_speed_mps: 0.2
     retreat_duration_s: 1.0
 
-    # ---- Loop ----
     publish_rate_hz: 100.0

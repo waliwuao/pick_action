@@ -22,9 +22,10 @@ def generate_launch_description():
 
     port_name = LaunchConfiguration('port_name')
     use_synthetic = LaunchConfiguration('use_synthetic')
+    pick_config = LaunchConfiguration('pick_config')
 
     recognition_config = os.path.join(pick_share, 'config', 'recognition.yaml')
-    pick_config = os.path.join(pick_share, 'config', 'pick_action.yaml')
+    default_pick_config = os.path.join(pick_share, 'config', 'pick_action.yaml')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -41,6 +42,11 @@ def generate_launch_description():
             'expected_count',
             default_value='3',
             description='Number of expected targets',
+        ),
+        DeclareLaunchArgument(
+            'pick_config',
+            default_value=default_pick_config,
+            description='Pick action server parameter YAML',
         ),
 
         # Real LiDAR driver

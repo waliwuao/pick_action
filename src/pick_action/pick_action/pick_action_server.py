@@ -5,18 +5,25 @@ grasp → lift → retreat → lower.
 """
 
 import json
+import math
 import threading
 import time
 
 import rclpy
+from geometry_msgs.msg import PoseStamped
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String
 
+from .pose_alignment import (
+    correct_pose_from_odin,
+    project_target_to_gripper_line,
+    yaw_from_quaternion,
+)
+from ares_tool_interfaces.srv import ToolAction
 from pick_action_interfaces.action import PickSequence
-from r2_interfaces.srv import ToolAction
 
 
 class PickActionServer(Node):
@@ -26,10 +33,28 @@ class PickActionServer(Node):
         super().__init__('pick_action_server')
 
         self.declare_parameter('result_topic', '/spear_recognition/result')
+        self.declare_parameter('alignment_mode', 'lidar_recognition')
         self.declare_parameter('tool_service', '/ares_tool_node/tool_action')
         self.declare_parameter('chassis_topic', '/t0x0111_')
         self.declare_parameter('lift_topic', '/t0x0112_')
         self.declare_parameter('status_topic', '/pick_action/status')
+
+        self.declare_parameter('sensor_topic', '/sensor_distances')
+        self.declare_parameter('pose_topic', '/odin1/relocation')
+        self.declare_parameter('sensor_count', 8)
+        self.declare_parameter('sensor_3_index', 3)
+        self.declare_parameter('sensor_5_index', 5)
+        self.declare_parameter('sensor_max_age_s', 0.5)
+        self.declare_parameter('pose_max_age_s', 0.5)
+
+        self.declare_parameter('field_origin_x_m', 0.0)
+        self.declare_parameter('field_origin_y_m', 0.0)
+        self.declare_parameter('gripper_forward_m', 0.0)
+        self.declare_parameter('gripper_left_m', 0.0)
+        self.declare_parameter('gripper_yaw_offset_rad', 0.0)
+        self.declare_parameter('projection_target_x_m', 0.0)
+        self.declare_parameter('projection_target_y_m', 0.0)
+        self.declare_parameter('projection_direction_sign', 1.0)
 
         self.declare_parameter('prepare_offset_m', 0.3)
         self.declare_parameter('direction_sign_x', -1.0)
@@ -52,6 +77,14 @@ class PickActionServer(Node):
 
         self._latest_recognition: dict | None = None
         self._recognition_lock = threading.Lock()
+        self._latest_distances = [
+            math.nan
+            for _ in range(int(self.get_parameter('sensor_count').value))
+        ]
+        self._latest_sensor_receive_time_s = math.nan
+        self._latest_pose: PoseStamped | None = None
+        self._latest_pose_receive_time_s = math.nan
+        self._pose_lock = threading.Lock()
         self._callback_group = ReentrantCallbackGroup()
 
         self._chassis_pub = self.create_publisher(
@@ -75,6 +108,18 @@ class PickActionServer(Node):
             self._recognition_callback,
             10,
         )
+        self._sensor_subscription = self.create_subscription(
+            Float32MultiArray,
+            self.get_parameter('sensor_topic').value,
+            self._sensor_callback,
+            10,
+        )
+        self._pose_subscription = self.create_subscription(
+            PoseStamped,
+            self.get_parameter('pose_topic').value,
+            self._pose_callback,
+            10,
+        )
 
         self._action_server = ActionServer(
             self,
@@ -89,7 +134,10 @@ class PickActionServer(Node):
         self._tool_client = None
         self._init_tool_client()
 
-        self.get_logger().info('Pick action server ready')
+        self.get_logger().info(
+            'Pick action server ready; alignment_mode=%s'
+            % self.get_parameter('alignment_mode').value
+        )
 
     def _init_tool_client(self) -> None:
         try:
@@ -116,6 +164,31 @@ class PickActionServer(Node):
                 self._latest_recognition = data
         except (TypeError, json.JSONDecodeError):
             pass
+
+    def _sensor_callback(self, msg: Float32MultiArray) -> None:
+        sensor_count = int(self.get_parameter('sensor_count').value)
+        distances = [math.nan] * sensor_count
+        for index in range(min(sensor_count, len(msg.data))):
+            distances[index] = float(msg.data[index])
+        with self._pose_lock:
+            self._latest_distances = distances
+            self._latest_sensor_receive_time_s = self._now_sec()
+
+    def _pose_callback(self, msg: PoseStamped) -> None:
+        with self._pose_lock:
+            self._latest_pose = msg
+            self._latest_pose_receive_time_s = self._now_sec()
+
+    def _now_sec(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _uses_odin_sensor_projection(self) -> bool:
+        mode = str(self.get_parameter('alignment_mode').value)
+        return mode.lower() in (
+            'odin_sensor_projection',
+            'odin_sensor',
+            'projection',
+        )
 
     def _goal_callback(self, goal_request: PickSequence.Goal) -> GoalResponse:
         self.get_logger().info('Received goal: expected_count=%d' % goal_request.expected_count)
@@ -148,6 +221,92 @@ class PickActionServer(Node):
         x_m = float(best['x_m'])
         y_m = float(best['y_m'])
         return tid, x_m, y_m
+
+    def _compute_projection_alignment(self) -> dict | None:
+        now_s = self._now_sec()
+        with self._pose_lock:
+            distances = list(self._latest_distances)
+            sensor_receive_time_s = self._latest_sensor_receive_time_s
+            pose = self._latest_pose
+            pose_receive_time_s = self._latest_pose_receive_time_s
+
+        if pose is None:
+            return None
+        sensor_age_s = now_s - sensor_receive_time_s
+        pose_age_s = now_s - pose_receive_time_s
+        if (
+            not math.isfinite(sensor_age_s)
+            or sensor_age_s > float(self.get_parameter('sensor_max_age_s').value)
+            or pose_age_s > float(self.get_parameter('pose_max_age_s').value)
+        ):
+            return None
+
+        sensor_3_index = int(self.get_parameter('sensor_3_index').value)
+        sensor_5_index = int(self.get_parameter('sensor_5_index').value)
+        if (
+            sensor_3_index >= len(distances)
+            or sensor_5_index >= len(distances)
+            or sensor_3_index < 0
+            or sensor_5_index < 0
+        ):
+            self.get_logger().error('Configured sensor index is out of range')
+            return None
+
+        sensor_3_mm = distances[sensor_3_index]
+        sensor_5_mm = distances[sensor_5_index]
+        if not math.isfinite(sensor_3_mm) or not math.isfinite(sensor_5_mm):
+            return None
+
+        position = pose.pose.position
+        yaw_rad = yaw_from_quaternion(pose.pose.orientation)
+        corrected = correct_pose_from_odin(
+            sensor_3_mm,
+            sensor_5_mm,
+            float(position.x),
+            float(position.y),
+            yaw_rad,
+            float(self.get_parameter('field_origin_x_m').value),
+            float(self.get_parameter('field_origin_y_m').value),
+            float(self.get_parameter('gripper_forward_m').value),
+            float(self.get_parameter('gripper_left_m').value),
+            float(self.get_parameter('gripper_yaw_offset_rad').value),
+        )
+        alignment = project_target_to_gripper_line(
+            corrected['corrected_gripper_x_m'],
+            corrected['corrected_gripper_y_m'],
+            corrected['corrected_gripper_yaw_rad'],
+            float(self.get_parameter('projection_target_x_m').value),
+            float(self.get_parameter('projection_target_y_m').value),
+        )
+        return {
+            'target_id': 0,
+            'target_x_m': alignment.target_x_m,
+            'target_y_m': alignment.target_y_m,
+            'sensor_3_mm': sensor_3_mm,
+            'sensor_5_mm': sensor_5_mm,
+            'sensor_age_s': sensor_age_s,
+            'pose_age_s': pose_age_s,
+            'odin_x_m': float(position.x),
+            'odin_y_m': float(position.y),
+            'odin_yaw_rad': yaw_rad,
+            'corrected': corrected,
+            'gripper_x_m': alignment.gripper_x_m,
+            'gripper_y_m': alignment.gripper_y_m,
+            'gripper_yaw_rad': alignment.gripper_yaw_rad,
+            'projection_x_m': alignment.projection_x_m,
+            'projection_y_m': alignment.projection_y_m,
+            'along_offset_m': alignment.along_offset_m,
+            'lateral_error_m': alignment.lateral_error_m,
+        }
+
+    def _wait_for_projection_alignment(self, timeout_s: float) -> dict | None:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            alignment = self._compute_projection_alignment()
+            if alignment is not None:
+                return alignment
+            time.sleep(0.05)
+        return None
 
     def _call_tool_action(self, action: str, args: list[float],
                           timeout_ms: float) -> bool:
@@ -200,22 +359,44 @@ class PickActionServer(Node):
         self._lift_pub.publish(msg)
 
     def _publish_status(self, state: str, target_id: int,
-                        x_m: float, y_m: float) -> None:
+                        x_m: float, y_m: float,
+                        extra: dict | None = None) -> None:
         msg = String()
-        msg.data = json.dumps(
-            {
-                'state': state,
-                'target_id': target_id,
-                'target_x_m': round(x_m, 4),
-                'target_y_m': round(y_m, 4),
-            },
-            ensure_ascii=False,
-        )
+        payload = {
+            'state': state,
+            'target_id': target_id,
+            'target_x_m': round(x_m, 4),
+            'target_y_m': round(y_m, 4),
+        }
+        if extra:
+            payload.update(extra)
+        msg.data = json.dumps(payload, ensure_ascii=False)
         self._status_pub.publish(msg)
+
+    def _projection_status_extra(self, alignment: dict | None) -> dict:
+        if alignment is None:
+            return {}
+        return {
+            'alignment_mode': 'odin_sensor_projection',
+            'sensor_3_mm': round(float(alignment['sensor_3_mm']), 3),
+            'sensor_5_mm': round(float(alignment['sensor_5_mm']), 3),
+            'odin_x_m': round(float(alignment['odin_x_m']), 4),
+            'odin_y_m': round(float(alignment['odin_y_m']), 4),
+            'odin_yaw_rad': round(float(alignment['odin_yaw_rad']), 6),
+            'gripper_x_m': round(float(alignment['gripper_x_m']), 4),
+            'gripper_y_m': round(float(alignment['gripper_y_m']), 4),
+            'gripper_yaw_rad': round(float(alignment['gripper_yaw_rad']), 6),
+            'projection_x_m': round(float(alignment['projection_x_m']), 4),
+            'projection_y_m': round(float(alignment['projection_y_m']), 4),
+            'along_offset_m': round(float(alignment['along_offset_m']), 4),
+            'lateral_error_m': round(float(alignment['lateral_error_m']), 4),
+        }
 
     def _execute_callback(self, goal_handle) -> PickSequence.Result:
         expected_count = goal_handle.request.expected_count
         start_time = time.monotonic()
+        use_projection = self._uses_odin_sensor_projection()
+        projection_alignment = None
 
         def feedback(state: str) -> None:
             elapsed = time.monotonic() - start_time
@@ -225,33 +406,78 @@ class PickActionServer(Node):
 
         # ---- VALIDATE ----
         feedback('VALIDATING')
-        if not self._wait_for_recognition(expected_count, timeout_s=10.0):
-            self.get_logger().error(
-                'Recognition failed (expected %d targets)' % expected_count
+        if use_projection:
+            projection_alignment = self._wait_for_projection_alignment(
+                timeout_s=10.0
             )
-            goal_handle.abort()
-            return PickSequence.Result(
-                success=False,
-                message='Recognition did not reach %d targets within timeout'
-                        % expected_count,
+            if projection_alignment is None:
+                self.get_logger().error(
+                    'Odin/sensor projection data not ready'
+                )
+                goal_handle.abort()
+                return PickSequence.Result(
+                    success=False,
+                    message='Odin pose or sensor 3/5 data not ready',
+                )
+            tid = int(projection_alignment['target_id'])
+            x_m = float(projection_alignment['target_x_m'])
+            y_m = float(projection_alignment['target_y_m'])
+            self._publish_status(
+                'VALIDATING',
+                tid,
+                x_m,
+                y_m,
+                self._projection_status_extra(projection_alignment),
             )
+            self.get_logger().info(
+                'Projection target: target=(%.4f, %.4f) '
+                'gripper=(%.4f, %.4f, yaw=%.4f) along=%.4f lateral=%.4f'
+                % (
+                    x_m,
+                    y_m,
+                    projection_alignment['gripper_x_m'],
+                    projection_alignment['gripper_y_m'],
+                    projection_alignment['gripper_yaw_rad'],
+                    projection_alignment['along_offset_m'],
+                    projection_alignment['lateral_error_m'],
+                )
+            )
+        else:
+            if not self._wait_for_recognition(expected_count, timeout_s=10.0):
+                self.get_logger().error(
+                    'Recognition failed (expected %d targets)' % expected_count
+                )
+                goal_handle.abort()
+                return PickSequence.Result(
+                    success=False,
+                    message='Recognition did not reach %d targets within timeout'
+                            % expected_count,
+                )
 
-        tid, x_m, y_m = self._pick_best_target()
-        if tid < 0:
-            goal_handle.abort()
-            return PickSequence.Result(success=False, message='No targets found')
+            tid, x_m, y_m = self._pick_best_target()
+            if tid < 0:
+                goal_handle.abort()
+                return PickSequence.Result(success=False, message='No targets found')
 
-        self._publish_status('VALIDATING', tid, x_m, y_m)
-        self.get_logger().info(
-            'Selected target %d: x=%.4f y=%.4f' % (tid, x_m, y_m)
-        )
+            self._publish_status('VALIDATING', tid, x_m, y_m)
+            self.get_logger().info(
+                'Selected target %d: x=%.4f y=%.4f' % (tid, x_m, y_m)
+            )
 
         # ---- ALIGN_X ----
         feedback('ALIGN_X')
-        error_x = 0.0 - x_m
+        if use_projection:
+            error_x = float(projection_alignment['along_offset_m'])
+        else:
+            error_x = 0.0 - x_m
         db_x = float(self.get_parameter('deadband_x_m').value)
         if abs(error_x) > db_x:
-            sign = float(self.get_parameter('direction_sign_x').value)
+            if use_projection:
+                sign = float(
+                    self.get_parameter('projection_direction_sign').value
+                )
+            else:
+                sign = float(self.get_parameter('direction_sign_x').value)
             offset = float(self.get_parameter('prepare_offset_m').value)
             length = sign * error_x + offset
             self.get_logger().info(
@@ -266,19 +492,40 @@ class PickActionServer(Node):
         else:
             self.get_logger().info('X already in deadband (error=%.4f)' % error_x)
 
-        self._publish_status('ALIGN_X', tid, x_m, y_m)
+        self._publish_status(
+            'ALIGN_X',
+            tid,
+            x_m,
+            y_m,
+            (
+                self._projection_status_extra(projection_alignment)
+                if use_projection else None
+            ),
+        )
 
-        # Re-sample recognition for updated Y after alignment
-        time.sleep(0.3)
-        with self._recognition_lock:
-            data = self._latest_recognition
-        if data is not None and data.get('status') == 'recognized':
-            targets = data.get('targets', [])
-            if targets:
-                best = min(targets, key=lambda t: abs(float(t.get('x_m', 0.0))))
-                y_m = float(best['y_m'])
-                x_m = float(best['x_m'])
-                tid = int(best.get('id', tid))
+        if use_projection:
+            time.sleep(0.3)
+            refreshed = self._compute_projection_alignment()
+            if refreshed is not None:
+                projection_alignment = refreshed
+                tid = int(projection_alignment['target_id'])
+                x_m = float(projection_alignment['target_x_m'])
+                y_m = float(projection_alignment['target_y_m'])
+        else:
+            # Re-sample recognition for updated Y after alignment
+            time.sleep(0.3)
+            with self._recognition_lock:
+                data = self._latest_recognition
+            if data is not None and data.get('status') == 'recognized':
+                targets = data.get('targets', [])
+                if targets:
+                    best = min(
+                        targets,
+                        key=lambda t: abs(float(t.get('x_m', 0.0))),
+                    )
+                    y_m = float(best['y_m'])
+                    x_m = float(best['x_m'])
+                    tid = int(best.get('id', tid))
 
         # ---- FORWARD ----
         feedback('FORWARD')

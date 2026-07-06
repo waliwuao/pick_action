@@ -1,27 +1,22 @@
 # pick_action
 
-ROS 2 Jazzy monorepo for an autonomous pick sequence:
+这是一个 ROS 2 Jazzy 工作空间，用来执行自动夹取流程：
 
-`validate target -> align -> forward -> grasp -> lift -> retreat -> lower -> done`
+```text
+VALIDATING -> ALIGN_X -> FORWARD -> GRASP -> LIFT -> RETREAT -> LOWER -> DONE
+```
 
-The action server supports two alignment modes:
+当前支持 3 种模式：
 
-- `lidar_recognition`: uses 2D LiDAR recognition results from `/spear_recognition/result`.
-- `odin_sensor_projection`: uses Odin pose plus distance sensors 3 and 5, computes the corrected gripper pose and signed gripper move directly, then sends a prepare length command.
-- `no_alignment`: skips recognition, Odin/sensor correction, and `ALIGN_X`, then goes directly to forward movement, grasp, lift, retreat, lower.
-
-## Packages
-
-| Package | Type | Role |
+| 模式 | `alignment_mode` | 用途 |
 |---|---|---|
-| `pick_action_interfaces` | `ament_cmake` | `action/PickSequence.action` |
-| `ares_tool_interfaces` | `ament_cmake` | `srv/ToolAction.srv` client interface for `/ares_tool_node/tool_action` |
-| `ldlidar_stl_ros2` | `ament_cmake` | STL-27L/LD06/LD19 LiDAR driver, publishes `/scan` |
-| `pick_action` | `ament_python` | Recognition node, action server, synthetic scan node, trigger CLI |
+| 2D 雷达识别模式 | `lidar_recognition` | 用 `/scan` 识别目标，再用 `prepare` 做横向对齐 |
+| Odin + 单点传感器纠错模式 | `odin_sensor_projection` | 用 `/sensor_distances` 和 `/odin1/relocation` 计算夹爪纠错位移，再用 `prepare` 对齐 |
+| 无对齐模式 | `no_alignment` | 不读取识别/Odin/传感器数据，不纠错，不 `prepare`，直接前进夹取 |
 
-The real `ares_tool_control` node is not in this repository. It must run in the ARES workspace and provide `/ares_tool_node/tool_action`.
+真实的 `/ares_tool_node/tool_action` 节点不在本仓库里，需要在 ARES 工作空间中启动。本仓库只包含 `ares_tool_interfaces` 接口包，供 `pick_action` 编译和调用。
 
-## Build
+## 编译
 
 ```bash
 cd /home/gsp/pick_action
@@ -30,91 +25,205 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-Install dependencies once if needed:
+如需安装依赖：
 
 ```bash
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
-## Configuration
+## 配置文件
 
-Main config file:
+现在只使用一份主配置：
 
-- `src/pick_action/config/pick_action.yaml`: action-server parameters and recognition parameters.
-
-The mode is selected by the action-server parameter:
-
-```yaml
-alignment_mode: lidar_recognition
+```text
+src/pick_action/config/pick_action.yaml
 ```
 
-or:
+这份 YAML 同时配置：
 
-```yaml
-alignment_mode: odin_sensor_projection
-```
+- `pick_action_server`
+- `spear_recognition`
 
-or:
+也就是说，之前分散的 `recognition.yaml` 和 Odin 模式配置已经合并到 `pick_action.yaml` 里。
+
+## 如何切换模式
+
+修改 `src/pick_action/config/pick_action.yaml` 里的：
 
 ```yaml
 alignment_mode: no_alignment
 ```
 
-The launch file loads this single YAML for both `pick_action_server` and `spear_recognition`.
-
-## Run: LiDAR Recognition Mode
-
-This mode uses `/scan -> recognition_node -> /spear_recognition/result`. To use it, set this in `src/pick_action/config/pick_action.yaml`:
+可选值：
 
 ```yaml
 alignment_mode: lidar_recognition
+alignment_mode: odin_sensor_projection
+alignment_mode: no_alignment
 ```
 
-With real LiDAR:
+当前默认已经设置为：
+
+```yaml
+alignment_mode: no_alignment
+```
+
+## 启动方式
+
+### 1. 启动主流程
+
+真实 2D 雷达：
 
 ```bash
+cd /home/gsp/pick_action
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 launch pick_action pick_action.launch.py port_name:=/dev/ttyUSB0
 ```
 
-Without LiDAR hardware, use synthetic scan:
+无 2D 雷达硬件时使用模拟 `/scan`：
 
 ```bash
+cd /home/gsp/pick_action
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 launch pick_action pick_action.launch.py use_synthetic:=true
 ```
 
-Then trigger:
+如果当前是 `odin_sensor_projection` 或 `no_alignment`，2D 雷达识别结果不会决定对齐逻辑；但 launch 仍会启动识别节点。
+
+### 2. 触发夹取
 
 ```bash
 ros2 action send_goal /pick_action pick_action_interfaces/action/PickSequence \
   "{expected_count: 3}" --feedback
 ```
 
-In this mode, `VALIDATING` waits for `recognized_count == expected_count`, then selects the target with the smallest `abs(x_m)`. `ALIGN_X` sends `prepare(length)` where:
+说明：
+
+- 在 `lidar_recognition` 模式下，`expected_count` 会用于等待识别到指定数量目标。
+- 在 `odin_sensor_projection` 和 `no_alignment` 模式下，`expected_count` 基本只是 action 接口保留字段。
+
+## 模式 1：2D 雷达识别模式
+
+配置：
+
+```yaml
+alignment_mode: lidar_recognition
+```
+
+数据来源：
+
+| 名称 | 类型 | 作用 |
+|---|---|---|
+| `/scan` | `sensor_msgs/LaserScan` | 2D 雷达原始扫描 |
+| `/spear_recognition/result` | `std_msgs/String` JSON | 识别节点输出的目标 |
+
+流程：
+
+```text
+VALIDATING:
+  等待 /spear_recognition/result 中 recognized_count == expected_count
+  选择 abs(x_m) 最小的目标
+
+ALIGN_X:
+  根据目标 x_m 计算 prepare(length)
+
+FORWARD -> GRASP -> LIFT -> RETREAT -> LOWER -> DONE
+```
+
+相关参数：
+
+```yaml
+result_topic: /spear_recognition/result
+direction_sign_x: -1.0
+deadband_x_m: 0.005
+prepare_base_length_m: 0.3
+prepare_min_length_m: 0.0
+prepare_max_length_m: 0.5
+prepare_timeout_ms: 20000
+```
+
+`ALIGN_X` 的计算逻辑：
 
 ```text
 error_x = 0.0 - target_x_m
 length = direction_sign_x * error_x + prepare_base_length_m
 ```
 
-## Run: Odin + Sensor Projection Mode
+`length` 会被限制在：
 
-This mode does not use the 2D LiDAR recognition result for alignment. It reads:
+```text
+prepare_min_length_m <= length <= prepare_max_length_m
+```
 
-- `/sensor_distances`: `std_msgs/Float32MultiArray`
-- `/odin1/relocation`: `geometry_msgs/PoseStamped`
+识别节点参数也在同一个 YAML 里，位于：
 
-It uses sensor indexes 3 and 5 by default:
+```yaml
+spear_recognition:
+  ros__parameters:
+    input_topic: /scan
+    range_min_m: 0.05
+    range_max_m: 0.43
+    angle_min_deg: 10.0
+    angle_max_deg: 170.0
+    x_min_m: -0.43
+    x_max_m: 0.43
+    y_min_m: 0.05
+    y_max_m: 0.43
+```
+
+## 模式 2：Odin + 单点传感器纠错模式
+
+配置：
+
+```yaml
+alignment_mode: odin_sensor_projection
+```
+
+数据来源：
+
+| 名称 | 类型 | 作用 |
+|---|---|---|
+| `/sensor_distances` | `std_msgs/Float32MultiArray` | 8 个单点测距值，单位 mm |
+| `/odin1/relocation` | `geometry_msgs/PoseStamped` | 机器人原始 Odin 位姿 |
+
+默认使用：
 
 ```yaml
 sensor_3_index: 3
 sensor_5_index: 5
 ```
 
-Edit the Odin/sensor section in `src/pick_action/config/pick_action.yaml` before running:
+流程：
+
+```text
+VALIDATING:
+  等待新鲜的 /sensor_distances 和 /odin1/relocation
+  使用传感器 3/5 + Odin yaw 计算纠错后的机器人位姿
+  计算夹爪在蓝场坐标系下的 x/y/yaw
+  根据目标点投影，得到夹爪需要移动的 gripper_forward_move_m
+
+ALIGN_X:
+  length = prepare_base_length_m + gripper_forward_move_m
+  调用 /ares_tool_node/tool_action: action='prepare'
+
+FORWARD -> GRASP -> LIFT -> RETREAT -> LOWER -> DONE
+```
+
+相关参数：
+
+```yaml
+sensor_topic: /sensor_distances
+pose_topic: /odin1/relocation
+sensor_count: 8
+sensor_3_index: 3
+sensor_5_index: 5
+sensor_max_age_s: 0.5
+pose_max_age_s: 0.5
+```
+
+坐标系和夹爪参数：
 
 ```yaml
 field_origin_x_m: -0.4
@@ -125,126 +234,205 @@ gripper_yaw_offset_rad: -1.5707963268
 target_x_m: 1.05
 target_y_m: -0.15
 gripper_move_direct: -1.0
+```
 
+含义：
+
+| 参数 | 含义 |
+|---|---|
+| `field_origin_x_m` / `field_origin_y_m` | 蓝场坐标系原点在原始 Odin 坐标系下的位置 |
+| `gripper_forward_m` / `gripper_left_m` | 夹爪点相对 Odin 机器人点 S 的位置，机器人本体系，单位 m |
+| `gripper_yaw_offset_rad` | 夹爪 yaw 相对 Odin yaw 的偏移 |
+| `target_x_m` / `target_y_m` | 要夹取的目标点，蓝场坐标系下，单位 m |
+| `gripper_move_direct` | 平移方向修正，方向反了就改成 `1.0` 或 `-1.0` |
+
+夹爪长度控制参数：
+
+```yaml
 prepare_base_length_m: 0.3
 prepare_min_length_m: 0.0
 prepare_max_length_m: 0.5
+deadband_x_m: 0.005
+prepare_timeout_ms: 20000
 ```
 
-The target point must be in the same field frame used by `pick_action.pose_alignment`. The server computes:
-
-1. Odin `x/y/yaw` from `/odin1/relocation`.
-2. Sensor 3 and 5 distances from `/sensor_distances`.
-3. Corrected robot pose using the model from `pick_action.pose_alignment`.
-4. Corrected gripper `x/y/yaw`.
-5. A line from the gripper pose along `gripper_yaw_rad`.
-6. The projection of `(target_x_m, target_y_m)` onto that line.
-7. `gripper_forward_move_m = gripper_move_direct * raw_projection_distance`.
-8. `prepare_length_m = prepare_base_length_m + gripper_forward_move_m`, limited by `prepare_min_length_m` and `prepare_max_length_m`.
-
-Run:
-
-```bash
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-ros2 launch pick_action pick_action.launch.py
-```
-
-Then trigger the same action:
-
-```bash
-ros2 action send_goal /pick_action pick_action_interfaces/action/PickSequence \
-  "{expected_count: 3}" --feedback
-```
-
-In this mode, `expected_count` is ignored by validation. It is kept only because the action definition is shared with LiDAR mode.
-
-`ALIGN_X` sends `prepare(length)` where:
+计算逻辑：
 
 ```text
-move = gripper_forward_move_m
-length = prepare_base_length_m + move
+raw_projection_distance = 目标点投影到夹爪 yaw 直线后的有符号距离
+gripper_forward_move_m = gripper_move_direct * raw_projection_distance
+length = prepare_base_length_m + gripper_forward_move_m
 ```
 
-Tune `gripper_move_direct` if the mechanism moves in the opposite direction.
+也就是说，硬件收到的不是“位移”，而是 `prepare` 的目标长度：
 
-## Run: No Alignment Mode
+```text
+prepare(length)
+```
 
-This mode is the fastest direct path. It does not wait for `/spear_recognition/result`, `/sensor_distances`, or `/odin1/relocation`; it does not compute pose correction; and it skips the `ALIGN_X` prepare step entirely. After a lightweight `VALIDATING` status, it goes directly to `FORWARD`.
+例如：
 
-Set this in `src/pick_action/config/pick_action.yaml`:
+```text
+prepare_base_length_m = 0.3
+gripper_forward_move_m = -0.15
+length = 0.15
+```
+
+## 模式 3：无对齐模式
+
+配置：
 
 ```yaml
 alignment_mode: no_alignment
 ```
 
-Then launch and trigger normally:
+这个模式是最快路径：
 
-```bash
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-ros2 launch pick_action pick_action.launch.py
-ros2 action send_goal /pick_action pick_action_interfaces/action/PickSequence \
-  "{expected_count: 3}" --feedback
+```text
+不等待 /spear_recognition/result
+不读取 /sensor_distances
+不读取 /odin1/relocation
+不计算纠错
+不执行 ALIGN_X
+不调用 prepare 对齐
 ```
 
-## Action States
+流程：
 
-| State | LiDAR mode | Odin + sensor projection mode | No alignment mode |
+```text
+VALIDATING:
+  只发布状态，不等待识别/Odin/传感器
+
+FORWARD -> GRASP -> LIFT -> RETREAT -> LOWER -> DONE
+```
+
+会使用的参数：
+
+```yaml
+forward_speed_mps: 0.2
+forward_duration_s: 1.8
+direction_sign_y: -1.0
+grasp_timeout_ms: 15000
+lift_height_mm: [70.0, 70.0, 70.0, 70.0]
+lower_height_mm: [28.0, 28.0, 28.0, 28.0]
+retreat_speed_mps: 0.2
+retreat_duration_s: 1.0
+publish_rate_hz: 100.0
+```
+
+不会使用的参数：
+
+```yaml
+result_topic
+sensor_topic
+pose_topic
+field_origin_x_m
+field_origin_y_m
+gripper_forward_m
+gripper_left_m
+gripper_yaw_offset_rad
+target_x_m
+target_y_m
+gripper_move_direct
+prepare_base_length_m
+prepare_min_length_m
+prepare_max_length_m
+deadband_x_m
+prepare_timeout_ms
+```
+
+## 三种模式状态对比
+
+| 状态 | `lidar_recognition` | `odin_sensor_projection` | `no_alignment` |
 |---|---|---|---|
-| `VALIDATING` | Waits for `/spear_recognition/result` with expected target count | Waits for fresh Odin pose and sensor 3/5 distances | Publishes status only |
-| `ALIGN_X` | Aligns to selected LiDAR target x | Aligns using corrected gripper move | Skipped |
-| `FORWARD` | Publishes timed chassis velocity to `/t0x0111_` | Same | Same |
-| `GRASP` | Calls `/ares_tool_node/tool_action` with `action='grasp'` | Same | Same |
-| `LIFT` | Publishes `lift_height_mm` to `/t0x0112_` | Same | Same |
-| `RETREAT` | Publishes timed reverse chassis velocity to `/t0x0111_` | Same | Same |
-| `LOWER` | Publishes `lower_height_mm` to `/t0x0112_` | Same | Same |
-| `DONE` | Succeeds the action | Same | Same |
+| `VALIDATING` | 等待 2D 雷达识别结果 | 等待 Odin 和传感器数据 | 只发布状态 |
+| `ALIGN_X` | 根据识别目标 x 对齐 | 根据纠错平移量对齐 | 跳过 |
+| `FORWARD` | 前进 | 前进 | 前进 |
+| `GRASP` | 夹取 | 夹取 | 夹取 |
+| `LIFT` | 抬升 | 抬升 | 抬升 |
+| `RETREAT` | 后退 | 后退 | 后退 |
+| `LOWER` | 下降 | 下降 | 下降 |
+| `DONE` | 完成 | 完成 | 完成 |
 
-Any failed service call, timeout, or cancellation aborts the action.
+## 通用运动和夹取参数
 
-## Topics and Services
+这些参数三个模式都会用到：
 
-| Name | Type | Direction | Notes |
+```yaml
+tool_service: /ares_tool_node/tool_action
+chassis_topic: /t0x0111_
+lift_topic: /t0x0112_
+status_topic: /pick_action/status
+
+forward_speed_mps: 0.2
+forward_duration_s: 1.8
+direction_sign_y: -1.0
+
+grasp_timeout_ms: 15000
+
+lift_height_mm: [70.0, 70.0, 70.0, 70.0]
+lower_height_mm: [28.0, 28.0, 28.0, 28.0]
+
+retreat_speed_mps: 0.2
+retreat_duration_s: 1.0
+
+publish_rate_hz: 100.0
+```
+
+## Topic 和 Service
+
+| 名称 | 类型 | 方向 | 使用场景 |
 |---|---|---|---|
-| `/pick_action` | `pick_action_interfaces/action/PickSequence` | action server | Main trigger |
-| `/spear_recognition/result` | `std_msgs/String` JSON | subscription | Used in LiDAR mode |
-| `/spear_recognition/markers` | `visualization_msgs/MarkerArray` | publication | RViz recognition visualization |
-| `/sensor_distances` | `std_msgs/Float32MultiArray` | subscription | Used in Odin projection mode |
-| `/odin1/relocation` | `geometry_msgs/PoseStamped` | subscription | Used in Odin projection mode |
-| `/ares_tool_node/tool_action` | `ares_tool_interfaces/srv/ToolAction` | client | `prepare`, `grasp` |
-| `/t0x0111_` | `std_msgs/Float32MultiArray` | publication | Chassis velocity |
-| `/t0x0112_` | `std_msgs/Float32MultiArray` | publication | Lift/lower heights |
-| `/pick_action/status` | `std_msgs/String` JSON | publication | Current state and target/alignment data |
+| `/pick_action` | `pick_action_interfaces/action/PickSequence` | action server | 三种模式都用 |
+| `/ares_tool_node/tool_action` | `ares_tool_interfaces/srv/ToolAction` | client | `prepare`、`grasp` |
+| `/t0x0111_` | `std_msgs/Float32MultiArray` | publish | 底盘前进/后退 |
+| `/t0x0112_` | `std_msgs/Float32MultiArray` | publish | 抬升/下降 |
+| `/pick_action/status` | `std_msgs/String` JSON | publish | 状态输出 |
+| `/scan` | `sensor_msgs/LaserScan` | subscribe | 2D 雷达识别模式 |
+| `/spear_recognition/result` | `std_msgs/String` JSON | subscribe | 2D 雷达识别模式 |
+| `/spear_recognition/markers` | `visualization_msgs/MarkerArray` | publish | 2D 雷达识别可视化 |
+| `/sensor_distances` | `std_msgs/Float32MultiArray` | subscribe | Odin + 单点传感器纠错模式 |
+| `/odin1/relocation` | `geometry_msgs/PoseStamped` | subscribe | Odin + 单点传感器纠错模式 |
 
-In `odin_sensor_projection` mode, `/pick_action/status` includes extra fields such as `sensor_3_mm`, `sensor_5_mm`, `odin_x_m`, `odin_y_m`, `gripper_x_m`, `gripper_y_m`, `projection_x_m`, `projection_y_m`, `along_offset_m`, and `lateral_error_m`.
+## 常用检查命令
 
-## Useful Checks
-
-Check action server parameters:
+查看当前模式：
 
 ```bash
 ros2 param get /pick_action_server alignment_mode
-ros2 param get /pick_action_server target_x_m
-ros2 param get /pick_action_server target_y_m
-ros2 param get /pick_action_server gripper_move_direct
 ```
 
-Watch status:
+查看状态：
 
 ```bash
 ros2 topic echo /pick_action/status
 ```
 
-Check Odin and sensor input:
+检查工具服务：
+
+```bash
+ros2 service list | grep /ares_tool_node/tool_action
+```
+
+检查 Odin 和单点传感器：
 
 ```bash
 ros2 topic echo /sensor_distances
 ros2 topic echo /odin1/relocation
 ```
 
-## Notes
+检查 2D 雷达识别：
 
-- Ubuntu 24.04 / ROS 2 Jazzy is the supported target.
-- There are no automated tests in this repo; `test_lift.py` is a manual hardware utility.
-- `setup.cfg` installs console scripts to `$base/lib/pick_action`, which is normal for ROS 2 Python packages.
+```bash
+ros2 topic echo /scan
+ros2 topic echo /spear_recognition/result
+```
+
+## 注意事项
+
+- 支持环境：Ubuntu 24.04 / ROS 2 Jazzy。
+- `no_alignment` 模式最快，但不会做任何横向对齐或纠错，前进时间和初始位置要靠你保证。
+- `odin_sensor_projection` 模式会使用 `sensor_3_index` 和 `sensor_5_index`，传感器 topic 中的数据单位是 mm。
+- `prepare(length)` 控制的是夹爪目标长度，不是直接位移；默认基准长度是 `0.3m`，允许范围是 `0.0m ~ 0.5m`。
+- `test_lift.py` 是手动硬件测试工具，不是自动化测试。
+- `setup.cfg` 会把 console scripts 安装到 `$base/lib/pick_action`，这是 ROS 2 Python 包的常见布局。

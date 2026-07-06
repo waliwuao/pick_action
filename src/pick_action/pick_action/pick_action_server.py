@@ -6,6 +6,7 @@ grasp → lift → retreat → lower.
 
 import json
 import math
+import os
 import threading
 import time
 
@@ -74,6 +75,7 @@ class PickActionServer(Node):
         self.declare_parameter('retreat_duration_s', 2.0)
 
         self.declare_parameter('publish_rate_hz', 100.0)
+        self.declare_parameter('alignment_data_path', '/tmp/alignment_result.json')
 
         self._latest_recognition: dict | None = None
         self._recognition_lock = threading.Lock()
@@ -392,6 +394,53 @@ class PickActionServer(Node):
             'lateral_error_m': round(float(alignment['lateral_error_m']), 4),
         }
 
+    def _save_alignment_data(self, alignment: dict, corrected: dict,
+                             sensor_3_mm: float, sensor_5_mm: float) -> None:
+        """Save correction results, projection distance, and target coordinates to file."""
+        save_path = str(self.get_parameter('alignment_data_path').value)
+        data = {
+            'timestamp_s': self._now_sec(),
+            'correction_result': {
+                'sensor_3_mm': round(float(sensor_3_mm), 3),
+                'sensor_5_mm': round(float(sensor_5_mm), 3),
+                'input_field_x_m': round(float(corrected['input_field_x_m']), 6),
+                'input_field_y_m': round(float(corrected['input_field_y_m']), 6),
+                'input_field_yaw_rad': round(float(corrected['input_field_yaw_rad']), 6),
+                'corrected_robot_x_m': round(float(corrected['corrected_robot_x_m']), 6),
+                'corrected_robot_y_m': round(float(corrected['corrected_robot_y_m']), 6),
+                'corrected_robot_yaw_rad': round(float(corrected['corrected_robot_yaw_rad']), 6),
+                'corrected_gripper_x_m': round(float(corrected['corrected_gripper_x_m']), 6),
+                'corrected_gripper_y_m': round(float(corrected['corrected_gripper_y_m']), 6),
+                'corrected_gripper_yaw_rad': round(float(corrected['corrected_gripper_yaw_rad']), 6),
+                'robot_delta_x_m': round(float(corrected['robot_delta_x_m']), 6),
+                'robot_delta_y_m': round(float(corrected['robot_delta_y_m']), 6),
+            },
+            'projection_distance': {
+                'along_offset_m': round(float(alignment['along_offset_m']), 6),
+                'lateral_error_m': round(float(alignment['lateral_error_m']), 6),
+                'projection_x_m': round(float(alignment['projection_x_m']), 6),
+                'projection_y_m': round(float(alignment['projection_y_m']), 6),
+                'gripper_x_m': round(float(alignment['gripper_x_m']), 6),
+                'gripper_y_m': round(float(alignment['gripper_y_m']), 6),
+                'gripper_yaw_rad': round(float(alignment['gripper_yaw_rad']), 6),
+            },
+            'target_coordinates': {
+                'target_x_m': round(float(alignment['target_x_m']), 6),
+                'target_y_m': round(float(alignment['target_y_m']), 6),
+            },
+        }
+        try:
+            os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+            with open(save_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            self.get_logger().info(
+                'Alignment data saved to %s' % save_path
+            )
+        except (OSError, TypeError) as exc:
+            self.get_logger().error(
+                'Failed to save alignment data to %s: %s' % (save_path, exc)
+            )
+
     def _execute_callback(self, goal_handle) -> PickSequence.Result:
         expected_count = goal_handle.request.expected_count
         start_time = time.monotonic()
@@ -441,6 +490,12 @@ class PickActionServer(Node):
                     projection_alignment['along_offset_m'],
                     projection_alignment['lateral_error_m'],
                 )
+            )
+            self._save_alignment_data(
+                projection_alignment,
+                projection_alignment['corrected'],
+                float(projection_alignment['sensor_3_mm']),
+                float(projection_alignment['sensor_5_mm']),
             )
         else:
             if not self._wait_for_recognition(expected_count, timeout_s=10.0):
@@ -511,6 +566,12 @@ class PickActionServer(Node):
                 tid = int(projection_alignment['target_id'])
                 x_m = float(projection_alignment['target_x_m'])
                 y_m = float(projection_alignment['target_y_m'])
+                self._save_alignment_data(
+                    projection_alignment,
+                    projection_alignment['corrected'],
+                    float(projection_alignment['sensor_3_mm']),
+                    float(projection_alignment['sensor_5_mm']),
+                )
         else:
             # Re-sample recognition for updated Y after alignment
             time.sleep(0.3)

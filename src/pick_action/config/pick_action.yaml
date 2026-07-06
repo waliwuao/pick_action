@@ -30,7 +30,7 @@ pick_action_server:
     # onto the gripper yaw line and uses the signed along-line offset for
     # prepare alignment.
     projection_target_x_m: 1.05
-    projection_target_y_m: 0.15
+    projection_target_y_m: -0.15
     projection_direction_sign: 1.0
 
     # ---- X alignment (prepare) ----

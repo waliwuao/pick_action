@@ -100,6 +100,9 @@ def correct_pose_from_odin(
     gripper_forward_m: float,
     gripper_left_m: float,
     gripper_yaw_offset_rad: float,
+    target_x_m: float,
+    target_y_m: float,
+    direct: float,
 ) -> dict[str, float]:
     input_field_x_m, input_field_y_m = odin_to_field(
         odin_x_m,
@@ -120,6 +123,14 @@ def correct_pose_from_odin(
         gripper_left_m,
         gripper_yaw_offset_rad,
     )
+    projection = project_target_to_gripper_line(
+        gripper_x_m,
+        gripper_y_m,
+        gripper_yaw_rad,
+        target_x_m,
+        target_y_m,
+    )
+    directed_move_m = float(direct) * projection.along_offset_m
     return {
         'input_field_x_m': input_field_x_m,
         'input_field_y_m': input_field_y_m,
@@ -130,6 +141,14 @@ def correct_pose_from_odin(
         'corrected_gripper_x_m': gripper_x_m,
         'corrected_gripper_y_m': gripper_y_m,
         'corrected_gripper_yaw_rad': gripper_yaw_rad,
+        'target_x_m': float(target_x_m),
+        'target_y_m': float(target_y_m),
+        'target_projection_x_m': projection.projection_x_m,
+        'target_projection_y_m': projection.projection_y_m,
+        'raw_gripper_forward_move_m': projection.along_offset_m,
+        'gripper_forward_move_m': directed_move_m,
+        'direct': float(direct),
+        'gripper_lateral_error_m': projection.lateral_error_m,
         'robot_delta_x_m': corrected_robot_x_m - input_field_x_m,
         'robot_delta_y_m': corrected_robot_y_m - input_field_y_m,
     }

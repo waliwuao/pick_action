@@ -20,7 +20,6 @@ from std_msgs.msg import Float32MultiArray, String
 
 from .pose_alignment import (
     correct_pose_from_odin,
-    project_target_to_gripper_line,
     yaw_from_quaternion,
 )
 from pick_action_interfaces.action import PickSequence
@@ -53,11 +52,13 @@ class PickActionServer(Node):
         self.declare_parameter('gripper_forward_m', 0.0)
         self.declare_parameter('gripper_left_m', 0.0)
         self.declare_parameter('gripper_yaw_offset_rad', 0.0)
-        self.declare_parameter('projection_target_x_m', 0.0)
-        self.declare_parameter('projection_target_y_m', 0.0)
-        self.declare_parameter('projection_direction_sign', 1.0)
+        self.declare_parameter('target_x_m', 1.05)
+        self.declare_parameter('target_y_m', -0.15)
+        self.declare_parameter('gripper_move_direct', -1.0)
 
-        self.declare_parameter('prepare_offset_m', 0.3)
+        self.declare_parameter('prepare_base_length_m', 0.3)
+        self.declare_parameter('prepare_min_length_m', 0.0)
+        self.declare_parameter('prepare_max_length_m', 0.5)
         self.declare_parameter('direction_sign_x', -1.0)
         self.declare_parameter('deadband_x_m', 0.005)
         self.declare_parameter('prepare_timeout_ms', 20000)
@@ -224,7 +225,7 @@ class PickActionServer(Node):
         y_m = float(best['y_m'])
         return tid, x_m, y_m
 
-    def _compute_projection_alignment(self) -> dict | None:
+    def _compute_odin_sensor_alignment(self) -> dict | None:
         now_s = self._now_sec()
         with self._pose_lock:
             distances = list(self._latest_distances)
@@ -272,18 +273,14 @@ class PickActionServer(Node):
             float(self.get_parameter('gripper_forward_m').value),
             float(self.get_parameter('gripper_left_m').value),
             float(self.get_parameter('gripper_yaw_offset_rad').value),
-        )
-        alignment = project_target_to_gripper_line(
-            corrected['corrected_gripper_x_m'],
-            corrected['corrected_gripper_y_m'],
-            corrected['corrected_gripper_yaw_rad'],
-            float(self.get_parameter('projection_target_x_m').value),
-            float(self.get_parameter('projection_target_y_m').value),
+            float(self.get_parameter('target_x_m').value),
+            float(self.get_parameter('target_y_m').value),
+            float(self.get_parameter('gripper_move_direct').value),
         )
         return {
             'target_id': 0,
-            'target_x_m': alignment.target_x_m,
-            'target_y_m': alignment.target_y_m,
+            'target_x_m': corrected['target_x_m'],
+            'target_y_m': corrected['target_y_m'],
             'sensor_3_mm': sensor_3_mm,
             'sensor_5_mm': sensor_5_mm,
             'sensor_age_s': sensor_age_s,
@@ -292,19 +289,21 @@ class PickActionServer(Node):
             'odin_y_m': float(position.y),
             'odin_yaw_rad': yaw_rad,
             'corrected': corrected,
-            'gripper_x_m': alignment.gripper_x_m,
-            'gripper_y_m': alignment.gripper_y_m,
-            'gripper_yaw_rad': alignment.gripper_yaw_rad,
-            'projection_x_m': alignment.projection_x_m,
-            'projection_y_m': alignment.projection_y_m,
-            'along_offset_m': alignment.along_offset_m,
-            'lateral_error_m': alignment.lateral_error_m,
+            'gripper_x_m': corrected['corrected_gripper_x_m'],
+            'gripper_y_m': corrected['corrected_gripper_y_m'],
+            'gripper_yaw_rad': corrected['corrected_gripper_yaw_rad'],
+            'projection_x_m': corrected['target_projection_x_m'],
+            'projection_y_m': corrected['target_projection_y_m'],
+            'raw_along_offset_m': corrected['raw_gripper_forward_move_m'],
+            'along_offset_m': corrected['gripper_forward_move_m'],
+            'direct': corrected['direct'],
+            'lateral_error_m': corrected['gripper_lateral_error_m'],
         }
 
-    def _wait_for_projection_alignment(self, timeout_s: float) -> dict | None:
+    def _wait_for_odin_sensor_alignment(self, timeout_s: float) -> dict | None:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            alignment = self._compute_projection_alignment()
+            alignment = self._compute_odin_sensor_alignment()
             if alignment is not None:
                 return alignment
             time.sleep(0.05)
@@ -391,6 +390,8 @@ class PickActionServer(Node):
             'projection_x_m': round(float(alignment['projection_x_m']), 4),
             'projection_y_m': round(float(alignment['projection_y_m']), 4),
             'along_offset_m': round(float(alignment['along_offset_m']), 4),
+            'raw_along_offset_m': round(float(alignment['raw_along_offset_m']), 4),
+            'direct': round(float(alignment['direct']), 1),
             'lateral_error_m': round(float(alignment['lateral_error_m']), 4),
         }
 
@@ -412,6 +413,14 @@ class PickActionServer(Node):
                 'corrected_gripper_x_m': round(float(corrected['corrected_gripper_x_m']), 6),
                 'corrected_gripper_y_m': round(float(corrected['corrected_gripper_y_m']), 6),
                 'corrected_gripper_yaw_rad': round(float(corrected['corrected_gripper_yaw_rad']), 6),
+                'target_x_m': round(float(corrected['target_x_m']), 6),
+                'target_y_m': round(float(corrected['target_y_m']), 6),
+                'target_projection_x_m': round(float(corrected['target_projection_x_m']), 6),
+                'target_projection_y_m': round(float(corrected['target_projection_y_m']), 6),
+                'raw_gripper_forward_move_m': round(float(corrected['raw_gripper_forward_move_m']), 6),
+                'gripper_forward_move_m': round(float(corrected['gripper_forward_move_m']), 6),
+                'direct': round(float(corrected['direct']), 1),
+                'gripper_lateral_error_m': round(float(corrected['gripper_lateral_error_m']), 6),
                 'robot_delta_x_m': round(float(corrected['robot_delta_x_m']), 6),
                 'robot_delta_y_m': round(float(corrected['robot_delta_y_m']), 6),
             },
@@ -456,7 +465,7 @@ class PickActionServer(Node):
         # ---- VALIDATE ----
         feedback('VALIDATING')
         if use_projection:
-            projection_alignment = self._wait_for_projection_alignment(
+            projection_alignment = self._wait_for_odin_sensor_alignment(
                 timeout_s=10.0
             )
             if projection_alignment is None:
@@ -480,7 +489,8 @@ class PickActionServer(Node):
             )
             self.get_logger().info(
                 'Projection target: target=(%.4f, %.4f) '
-                'gripper=(%.4f, %.4f, yaw=%.4f) along=%.4f lateral=%.4f'
+                'gripper=(%.4f, %.4f, yaw=%.4f) move=%.4f '
+                'raw=%.4f direct=%.1f lateral=%.4f'
                 % (
                     x_m,
                     y_m,
@@ -488,6 +498,8 @@ class PickActionServer(Node):
                     projection_alignment['gripper_y_m'],
                     projection_alignment['gripper_yaw_rad'],
                     projection_alignment['along_offset_m'],
+                    projection_alignment['raw_along_offset_m'],
+                    projection_alignment['direct'],
                     projection_alignment['lateral_error_m'],
                 )
             )
@@ -528,16 +540,31 @@ class PickActionServer(Node):
         db_x = float(self.get_parameter('deadband_x_m').value)
         if abs(error_x) > db_x:
             if use_projection:
-                sign = float(
-                    self.get_parameter('projection_direction_sign').value
+                length = (
+                    float(self.get_parameter('prepare_base_length_m').value)
+                    + error_x
                 )
             else:
                 sign = float(self.get_parameter('direction_sign_x').value)
-            offset = float(self.get_parameter('prepare_offset_m').value)
-            length = sign * error_x + offset
+                length = (
+                    sign * error_x
+                    + float(self.get_parameter('prepare_base_length_m').value)
+                )
+            min_length = float(self.get_parameter('prepare_min_length_m').value)
+            max_length = float(self.get_parameter('prepare_max_length_m').value)
             self.get_logger().info(
                 'Align X: error=%.4f length=%.4f' % (error_x, length)
             )
+            if length < min_length or length > max_length:
+                self.get_logger().error(
+                    'prepare length %.4f out of range [%.4f, %.4f]'
+                    % (length, min_length, max_length)
+                )
+                goal_handle.abort()
+                return PickSequence.Result(
+                    success=False,
+                    message='prepare length out of range',
+                )
             prepare_timeout = float(self.get_parameter('prepare_timeout_ms').value)
             if not self._call_tool_action('prepare', [length], prepare_timeout):
                 goal_handle.abort()
@@ -560,7 +587,7 @@ class PickActionServer(Node):
 
         if use_projection:
             time.sleep(0.3)
-            refreshed = self._compute_projection_alignment()
+            refreshed = self._compute_odin_sensor_alignment()
             if refreshed is not None:
                 projection_alignment = refreshed
                 tid = int(projection_alignment['target_id'])

@@ -7,7 +7,7 @@ ROS 2 Jazzy monorepo for an autonomous pick sequence:
 The action server supports two alignment modes:
 
 - `lidar_recognition`: uses 2D LiDAR recognition results from `/spear_recognition/result`.
-- `odin_sensor_projection`: uses Odin pose plus distance sensors 3 and 5, computes the gripper pose, projects a configured target point onto the gripper yaw line, and uses that projected offset for alignment.
+- `odin_sensor_projection`: uses Odin pose plus distance sensors 3 and 5, computes the corrected gripper pose and signed gripper move directly, then sends a prepare length command.
 
 ## Packages
 
@@ -37,11 +37,9 @@ rosdep install --from-paths src --ignore-src -r -y
 
 ## Configuration
 
-Main config files:
+Main config file:
 
-- `src/pick_action/config/pick_action.yaml`: default action-server config, mode is `lidar_recognition`.
-- `src/pick_action/config/odin_sensor_projection.yaml`: ready-to-edit config for Odin + sensor projection mode.
-- `src/pick_action/config/recognition.yaml`: LiDAR ROI, calibration, temporal grid recognition parameters.
+- `src/pick_action/config/pick_action.yaml`: action-server parameters and recognition parameters.
 
 The mode is selected by the action-server parameter:
 
@@ -55,11 +53,15 @@ or:
 alignment_mode: odin_sensor_projection
 ```
 
-The launch file accepts a `pick_config` argument, so the easiest way to switch mode is to pass a different YAML file.
+The launch file loads this single YAML for both `pick_action_server` and `spear_recognition`.
 
 ## Run: LiDAR Recognition Mode
 
-This is the default mode. It uses `/scan -> recognition_node -> /spear_recognition/result`.
+This mode uses `/scan -> recognition_node -> /spear_recognition/result`. To use it, set this in `src/pick_action/config/pick_action.yaml`:
+
+```yaml
+alignment_mode: lidar_recognition
+```
 
 With real LiDAR:
 
@@ -88,7 +90,7 @@ In this mode, `VALIDATING` waits for `recognized_count == expected_count`, then 
 
 ```text
 error_x = 0.0 - target_x_m
-length = direction_sign_x * error_x + prepare_offset_m
+length = direction_sign_x * error_x + prepare_base_length_m
 ```
 
 ## Run: Odin + Sensor Projection Mode
@@ -105,37 +107,40 @@ sensor_3_index: 3
 sensor_5_index: 5
 ```
 
-Edit `src/pick_action/config/odin_sensor_projection.yaml` before running:
+Edit the Odin/sensor section in `src/pick_action/config/pick_action.yaml` before running:
 
 ```yaml
-field_origin_x_m: 0.0
-field_origin_y_m: 0.0
-gripper_forward_m: 0.0
-gripper_left_m: 0.0
-gripper_yaw_offset_rad: 0.0
+field_origin_x_m: -0.4
+field_origin_y_m: -1.25
+gripper_forward_m: -0.5411111323
+gripper_left_m: 0.0342431067
+gripper_yaw_offset_rad: -1.5707963268
+target_x_m: 1.05
+target_y_m: -0.15
+gripper_move_direct: -1.0
 
-projection_target_x_m: 0.0
-projection_target_y_m: 0.0
-projection_direction_sign: 1.0
+prepare_base_length_m: 0.3
+prepare_min_length_m: 0.0
+prepare_max_length_m: 0.5
 ```
 
-The target point must be in the same field frame used by `scripts/correct_pose.py`. The server computes:
+The target point must be in the same field frame used by `pick_action.pose_alignment`. The server computes:
 
 1. Odin `x/y/yaw` from `/odin1/relocation`.
 2. Sensor 3 and 5 distances from `/sensor_distances`.
-3. Corrected robot pose using the model from `scripts/correct_pose.py`.
+3. Corrected robot pose using the model from `pick_action.pose_alignment`.
 4. Corrected gripper `x/y/yaw`.
 5. A line from the gripper pose along `gripper_yaw_rad`.
-6. The projection of `(projection_target_x_m, projection_target_y_m)` onto that line.
-7. `along_offset_m`, used by `ALIGN_X`.
+6. The projection of `(target_x_m, target_y_m)` onto that line.
+7. `gripper_forward_move_m = gripper_move_direct * raw_projection_distance`.
+8. `prepare_length_m = prepare_base_length_m + gripper_forward_move_m`, limited by `prepare_min_length_m` and `prepare_max_length_m`.
 
-Run with the projection config:
+Run:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-ros2 launch pick_action pick_action.launch.py \
-  pick_config:=/home/gsp/pick_action/src/pick_action/config/odin_sensor_projection.yaml
+ros2 launch pick_action pick_action.launch.py
 ```
 
 Then trigger the same action:
@@ -150,18 +155,18 @@ In this mode, `expected_count` is ignored by validation. It is kept only because
 `ALIGN_X` sends `prepare(length)` where:
 
 ```text
-error_x = along_offset_m
-length = projection_direction_sign * error_x + prepare_offset_m
+move = gripper_forward_move_m
+length = prepare_base_length_m + move
 ```
 
-Tune `projection_direction_sign` if the mechanism moves in the opposite direction.
+Tune `gripper_move_direct` if the mechanism moves in the opposite direction.
 
 ## Action States
 
 | State | LiDAR mode | Odin + sensor projection mode |
 |---|---|---|
 | `VALIDATING` | Waits for `/spear_recognition/result` with expected target count | Waits for fresh Odin pose and sensor 3/5 distances |
-| `ALIGN_X` | Aligns to selected LiDAR target x | Aligns using target projection offset on gripper yaw line |
+| `ALIGN_X` | Aligns to selected LiDAR target x | Aligns using corrected gripper move |
 | `FORWARD` | Publishes timed chassis velocity to `/t0x0111_` | Same |
 | `GRASP` | Calls `/ares_tool_node/tool_action` with `action='grasp'` | Same |
 | `LIFT` | Publishes `lift_height_mm` to `/t0x0112_` | Same |
@@ -193,8 +198,9 @@ Check action server parameters:
 
 ```bash
 ros2 param get /pick_action_server alignment_mode
-ros2 param get /pick_action_server projection_target_x_m
-ros2 param get /pick_action_server projection_target_y_m
+ros2 param get /pick_action_server target_x_m
+ros2 param get /pick_action_server target_y_m
+ros2 param get /pick_action_server gripper_move_direct
 ```
 
 Watch status:

@@ -24,7 +24,6 @@ def generate_launch_description():
     use_synthetic = LaunchConfiguration('use_synthetic')
     pick_config = LaunchConfiguration('pick_config')
 
-    recognition_config = os.path.join(pick_share, 'config', 'recognition.yaml')
     default_pick_config = os.path.join(pick_share, 'config', 'pick_action.yaml')
 
     return LaunchDescription([
@@ -73,7 +72,7 @@ def generate_launch_description():
             executable='recognition_node',
             name='spear_recognition',
             output='screen',
-            parameters=[recognition_config],
+            parameters=[pick_config],
         ),
 
         # Pick action server

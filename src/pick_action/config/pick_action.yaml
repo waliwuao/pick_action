@@ -19,22 +19,22 @@ pick_action_server:
     sensor_max_age_s: 0.5
     pose_max_age_s: 0.5
 
-    # Field-frame geometry used by correct_pose.py.
-    field_origin_x_m: 0.0
-    field_origin_y_m: 0.0
-    gripper_forward_m: 0.0
-    gripper_left_m: 0.0
-    gripper_yaw_offset_rad: 0.0
+    # Field-frame geometry and target point, all in meters/radians.
+    # Blue field origin expressed in the original Odin frame.
+    field_origin_x_m: -0.4
+    field_origin_y_m: -1.25
+    # Gripper pick point expressed in robot body frame at Odin point S.
+    gripper_forward_m: -0.5411111323
+    gripper_left_m: 0.0342431067
+    gripper_yaw_offset_rad: -1.5707963268
+    target_x_m: 1.05
+    target_y_m: -0.15
+    gripper_move_direct: -1.0
 
-    # Target point in the same field frame. The server projects this point
-    # onto the gripper yaw line and uses the signed along-line offset for
-    # prepare alignment.
-    projection_target_x_m: 1.05
-    projection_target_y_m: -0.15
-    projection_direction_sign: 1.0
-
-    # ---- X alignment (prepare) ----
-    prepare_offset_m: 0.3
+    # ---- X alignment / gripper prepare length ----
+    prepare_base_length_m: 0.3
+    prepare_min_length_m: 0.0
+    prepare_max_length_m: 0.5
     direction_sign_x: -1.0
     deadband_x_m: 0.005
     prepare_timeout_ms: 20000
@@ -57,3 +57,39 @@ pick_action_server:
 
     # ---- Loop ----
     publish_rate_hz: 100.0
+
+spear_recognition:
+  ros__parameters:
+    input_topic: /scan
+
+    range_min_m: 0.05
+    range_max_m: 0.43
+    angle_min_deg: 10.0
+    angle_max_deg: 170.0
+    x_min_m: -0.43
+    x_max_m: 0.43
+    y_min_m: 0.05
+    y_max_m: 0.43
+
+    range_calibration_scale: 1.0
+    range_calibration_offset_m: 0.0
+    range_calibration_cos_m: 0.0
+    range_calibration_sin_m: 0.0
+    range_calibration_cos2_m: 0.0
+
+    expected_count: 3
+    window_frames: 10
+    grid_resolution_m: 0.005
+    minimum_occupancy: 0.08
+    maximum_component_span_m: 0.15
+    maximum_spacing_deviation_ratio: -1.0
+    center_offset_along_m:
+      [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    center_offset_normal_m:
+      [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    polar_range_coefficients_m:
+      [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    polar_angle_coefficients_rad:
+      [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    marker_scale_m: 0.04
+    circle_radius_m: 0.045

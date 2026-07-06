@@ -193,6 +193,14 @@ class PickActionServer(Node):
             'projection',
         )
 
+    def _uses_no_alignment(self) -> bool:
+        mode = str(self.get_parameter('alignment_mode').value)
+        return mode.lower() in (
+            'no_alignment',
+            'none',
+            'direct',
+        )
+
     def _goal_callback(self, goal_request: PickSequence.Goal) -> GoalResponse:
         self.get_logger().info('Received goal: expected_count=%d' % goal_request.expected_count)
         return GoalResponse.ACCEPT
@@ -454,6 +462,7 @@ class PickActionServer(Node):
         expected_count = goal_handle.request.expected_count
         start_time = time.monotonic()
         use_projection = self._uses_odin_sensor_projection()
+        use_no_alignment = self._uses_no_alignment()
         projection_alignment = None
 
         def feedback(state: str) -> None:
@@ -464,7 +473,22 @@ class PickActionServer(Node):
 
         # ---- VALIDATE ----
         feedback('VALIDATING')
-        if use_projection:
+        if use_no_alignment:
+            tid = 0
+            x_m = 0.0
+            y_m = 0.0
+            self._publish_status(
+                'VALIDATING',
+                tid,
+                x_m,
+                y_m,
+                {'alignment_mode': 'no_alignment'},
+            )
+            self.get_logger().info(
+                'No-alignment mode: skipping recognition, Odin/sensor '
+                'correction, and ALIGN_X prepare'
+            )
+        elif use_projection:
             projection_alignment = self._wait_for_odin_sensor_alignment(
                 timeout_s=10.0
             )
@@ -531,89 +555,94 @@ class PickActionServer(Node):
                 'Selected target %d: x=%.4f y=%.4f' % (tid, x_m, y_m)
             )
 
-        # ---- ALIGN_X ----
-        feedback('ALIGN_X')
-        if use_projection:
-            error_x = float(projection_alignment['along_offset_m'])
-        else:
-            error_x = 0.0 - x_m
-        db_x = float(self.get_parameter('deadband_x_m').value)
-        if abs(error_x) > db_x:
+        if not use_no_alignment:
+            # ---- ALIGN_X ----
+            feedback('ALIGN_X')
             if use_projection:
-                length = (
-                    float(self.get_parameter('prepare_base_length_m').value)
-                    + error_x
-                )
+                error_x = float(projection_alignment['along_offset_m'])
             else:
-                sign = float(self.get_parameter('direction_sign_x').value)
-                length = (
-                    sign * error_x
-                    + float(self.get_parameter('prepare_base_length_m').value)
-                )
-            min_length = float(self.get_parameter('prepare_min_length_m').value)
-            max_length = float(self.get_parameter('prepare_max_length_m').value)
-            self.get_logger().info(
-                'Align X: error=%.4f length=%.4f' % (error_x, length)
-            )
-            if length < min_length or length > max_length:
-                self.get_logger().error(
-                    'prepare length %.4f out of range [%.4f, %.4f]'
-                    % (length, min_length, max_length)
-                )
-                goal_handle.abort()
-                return PickSequence.Result(
-                    success=False,
-                    message='prepare length out of range',
-                )
-            prepare_timeout = float(self.get_parameter('prepare_timeout_ms').value)
-            if not self._call_tool_action('prepare', [length], prepare_timeout):
-                goal_handle.abort()
-                return PickSequence.Result(
-                    success=False, message='prepare failed (ALIGN_X)'
-                )
-        else:
-            self.get_logger().info('X already in deadband (error=%.4f)' % error_x)
-
-        self._publish_status(
-            'ALIGN_X',
-            tid,
-            x_m,
-            y_m,
-            (
-                self._projection_status_extra(projection_alignment)
-                if use_projection else None
-            ),
-        )
-
-        if use_projection:
-            time.sleep(0.3)
-            refreshed = self._compute_odin_sensor_alignment()
-            if refreshed is not None:
-                projection_alignment = refreshed
-                tid = int(projection_alignment['target_id'])
-                x_m = float(projection_alignment['target_x_m'])
-                y_m = float(projection_alignment['target_y_m'])
-                self._save_alignment_data(
-                    projection_alignment,
-                    projection_alignment['corrected'],
-                    float(projection_alignment['sensor_3_mm']),
-                    float(projection_alignment['sensor_5_mm']),
-                )
-        else:
-            # Re-sample recognition for updated Y after alignment
-            time.sleep(0.3)
-            with self._recognition_lock:
-                data = self._latest_recognition
-            if data is not None and data.get('status') == 'recognized':
-                targets = data.get('targets', [])
-                if targets:
-                    best = min(
-                        targets,
-                        key=lambda t: abs(float(t.get('x_m', 0.0))),
+                error_x = 0.0 - x_m
+            db_x = float(self.get_parameter('deadband_x_m').value)
+            if abs(error_x) > db_x:
+                if use_projection:
+                    length = (
+                        float(self.get_parameter('prepare_base_length_m').value)
+                        + error_x
                     )
-                    y_m = float(best['y_m'])
-                    x_m = float(best['x_m'])
-                    tid = int(best.get('id', tid))
+                else:
+                    sign = float(self.get_parameter('direction_sign_x').value)
+                    length = (
+                        sign * error_x
+                        + float(self.get_parameter('prepare_base_length_m').value)
+                    )
+                min_length = float(self.get_parameter('prepare_min_length_m').value)
+                max_length = float(self.get_parameter('prepare_max_length_m').value)
+                self.get_logger().info(
+                    'Align X: error=%.4f length=%.4f' % (error_x, length)
+                )
+                if length < min_length or length > max_length:
+                    self.get_logger().error(
+                        'prepare length %.4f out of range [%.4f, %.4f]'
+                        % (length, min_length, max_length)
+                    )
+                    goal_handle.abort()
+                    return PickSequence.Result(
+                        success=False,
+                        message='prepare length out of range',
+                    )
+                prepare_timeout = float(
+                    self.get_parameter('prepare_timeout_ms').value
+                )
+                if not self._call_tool_action('prepare', [length], prepare_timeout):
+                    goal_handle.abort()
+                    return PickSequence.Result(
+                        success=False, message='prepare failed (ALIGN_X)'
+                    )
+            else:
+                self.get_logger().info(
+                    'X already in deadband (error=%.4f)' % error_x
+                )
+
+            self._publish_status(
+                'ALIGN_X',
+                tid,
+                x_m,
+                y_m,
+                (
+                    self._projection_status_extra(projection_alignment)
+                    if use_projection else None
+                ),
+            )
+
+            if use_projection:
+                time.sleep(0.3)
+                refreshed = self._compute_odin_sensor_alignment()
+                if refreshed is not None:
+                    projection_alignment = refreshed
+                    tid = int(projection_alignment['target_id'])
+                    x_m = float(projection_alignment['target_x_m'])
+                    y_m = float(projection_alignment['target_y_m'])
+                    self._save_alignment_data(
+                        projection_alignment,
+                        projection_alignment['corrected'],
+                        float(projection_alignment['sensor_3_mm']),
+                        float(projection_alignment['sensor_5_mm']),
+                    )
+            else:
+                # Re-sample recognition for updated Y after alignment
+                time.sleep(0.3)
+                with self._recognition_lock:
+                    data = self._latest_recognition
+                if data is not None and data.get('status') == 'recognized':
+                    targets = data.get('targets', [])
+                    if targets:
+                        best = min(
+                            targets,
+                            key=lambda t: abs(float(t.get('x_m', 0.0))),
+                        )
+                        y_m = float(best['y_m'])
+                        x_m = float(best['x_m'])
+                        tid = int(best.get('id', tid))
 
         # ---- FORWARD ----
         feedback('FORWARD')

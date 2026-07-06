@@ -8,6 +8,7 @@ The action server supports two alignment modes:
 
 - `lidar_recognition`: uses 2D LiDAR recognition results from `/spear_recognition/result`.
 - `odin_sensor_projection`: uses Odin pose plus distance sensors 3 and 5, computes the corrected gripper pose and signed gripper move directly, then sends a prepare length command.
+- `no_alignment`: skips recognition, Odin/sensor correction, and `ALIGN_X`, then goes directly to forward movement, grasp, lift, retreat, lower.
 
 ## Packages
 
@@ -51,6 +52,12 @@ or:
 
 ```yaml
 alignment_mode: odin_sensor_projection
+```
+
+or:
+
+```yaml
+alignment_mode: no_alignment
 ```
 
 The launch file loads this single YAML for both `pick_action_server` and `spear_recognition`.
@@ -161,18 +168,38 @@ length = prepare_base_length_m + move
 
 Tune `gripper_move_direct` if the mechanism moves in the opposite direction.
 
+## Run: No Alignment Mode
+
+This mode is the fastest direct path. It does not wait for `/spear_recognition/result`, `/sensor_distances`, or `/odin1/relocation`; it does not compute pose correction; and it skips the `ALIGN_X` prepare step entirely. After a lightweight `VALIDATING` status, it goes directly to `FORWARD`.
+
+Set this in `src/pick_action/config/pick_action.yaml`:
+
+```yaml
+alignment_mode: no_alignment
+```
+
+Then launch and trigger normally:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch pick_action pick_action.launch.py
+ros2 action send_goal /pick_action pick_action_interfaces/action/PickSequence \
+  "{expected_count: 3}" --feedback
+```
+
 ## Action States
 
-| State | LiDAR mode | Odin + sensor projection mode |
-|---|---|---|
-| `VALIDATING` | Waits for `/spear_recognition/result` with expected target count | Waits for fresh Odin pose and sensor 3/5 distances |
-| `ALIGN_X` | Aligns to selected LiDAR target x | Aligns using corrected gripper move |
-| `FORWARD` | Publishes timed chassis velocity to `/t0x0111_` | Same |
-| `GRASP` | Calls `/ares_tool_node/tool_action` with `action='grasp'` | Same |
-| `LIFT` | Publishes `lift_height_mm` to `/t0x0112_` | Same |
-| `RETREAT` | Publishes timed reverse chassis velocity to `/t0x0111_` | Same |
-| `LOWER` | Publishes `lower_height_mm` to `/t0x0112_` | Same |
-| `DONE` | Succeeds the action | Same |
+| State | LiDAR mode | Odin + sensor projection mode | No alignment mode |
+|---|---|---|---|
+| `VALIDATING` | Waits for `/spear_recognition/result` with expected target count | Waits for fresh Odin pose and sensor 3/5 distances | Publishes status only |
+| `ALIGN_X` | Aligns to selected LiDAR target x | Aligns using corrected gripper move | Skipped |
+| `FORWARD` | Publishes timed chassis velocity to `/t0x0111_` | Same | Same |
+| `GRASP` | Calls `/ares_tool_node/tool_action` with `action='grasp'` | Same | Same |
+| `LIFT` | Publishes `lift_height_mm` to `/t0x0112_` | Same | Same |
+| `RETREAT` | Publishes timed reverse chassis velocity to `/t0x0111_` | Same | Same |
+| `LOWER` | Publishes `lower_height_mm` to `/t0x0112_` | Same | Same |
+| `DONE` | Succeeds the action | Same | Same |
 
 Any failed service call, timeout, or cancellation aborts the action.
 

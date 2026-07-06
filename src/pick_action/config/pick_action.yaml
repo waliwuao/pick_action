@@ -1,7 +1,12 @@
 pick_action_server:
   ros__parameters:
     # Topics
-    alignment_mode: odin_sensor_projection
+    # Modes:
+    # - lidar_recognition: use 2D LiDAR recognition, then prepare-align.
+    # - odin_sensor_projection: use Odin + sensor 3/5 correction, then prepare-align.
+    # - no_alignment: skip recognition, Odin/sensor correction, and prepare-align,
+    #   then go directly forward.
+    alignment_mode: no_alignment
     result_topic: /spear_recognition/result
     tool_service: /ares_tool_node/tool_action
     chassis_topic: /t0x0111_
@@ -9,8 +14,7 @@ pick_action_server:
     status_topic: /pick_action/status
 
     # ---- Odin + sensor projection mode ----
-    # Set alignment_mode to odin_sensor_projection to use these instead of
-    # /spear_recognition/result during VALIDATING and ALIGN_X.
+    # Used by odin_sensor_projection mode.
     sensor_topic: /sensor_distances
     pose_topic: /odin1/relocation
     sensor_count: 8

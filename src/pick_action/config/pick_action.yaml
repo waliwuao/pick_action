@@ -1,7 +1,7 @@
 pick_action_server:
   ros__parameters:
     # Topics
-    alignment_mode: lidar_recognition
+    alignment_mode: odin_sensor_projection
     result_topic: /spear_recognition/result
     tool_service: /ares_tool_node/tool_action
     chassis_topic: /t0x0111_
@@ -29,8 +29,8 @@ pick_action_server:
     # Target point in the same field frame. The server projects this point
     # onto the gripper yaw line and uses the signed along-line offset for
     # prepare alignment.
-    projection_target_x_m: 0.0
-    projection_target_y_m: 0.0
+    projection_target_x_m: 1.05
+    projection_target_y_m: 0.15
     projection_direction_sign: 1.0
 
     # ---- X alignment (prepare) ----

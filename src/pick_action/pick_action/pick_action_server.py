@@ -22,8 +22,8 @@ from .pose_alignment import (
     project_target_to_gripper_line,
     yaw_from_quaternion,
 )
-from ares_tool_interfaces.srv import ToolAction
 from pick_action_interfaces.action import PickSequence
+from r2_interfaces.srv import ToolAction
 
 
 class PickActionServer(Node):

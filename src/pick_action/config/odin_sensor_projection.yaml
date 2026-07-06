@@ -22,8 +22,8 @@ pick_action_server:
     gripper_left_m: 0.0
     gripper_yaw_offset_rad: 0.0
 
-    projection_target_x_m: 0.0
-    projection_target_y_m: 0.0
+    projection_target_x_m: 1.05
+    projection_target_y_m: 0.15
     projection_direction_sign: 1.0
 
     prepare_offset_m: 0.3

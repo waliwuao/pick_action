@@ -70,6 +70,7 @@ class PickActionServer(Node):
         self.declare_parameter('scan_jump_threshold_mm', 80.0)
         self.declare_parameter('scan_present_threshold_mm', 250.0)
         self.declare_parameter('scan_present_duration_s', 0.2)
+        self.declare_parameter('scan_prepare_length_m', 0.05)
         self.declare_parameter('scan_prepare_speed_rpm', 30.0)
         self.declare_parameter('scan_center_extra_time_s', 0.25)
         self.declare_parameter('scan_timeout_s', 5.0)
@@ -419,6 +420,9 @@ class PickActionServer(Node):
         return self._call_tool_action(stop_action, stop_args, stop_timeout)
 
     def _run_sensor_scan(self, goal_handle) -> dict | None:
+        prepare_length_m = float(
+            self.get_parameter('scan_prepare_length_m').value
+        )
         speed_rpm = float(self.get_parameter('scan_prepare_speed_rpm').value)
         jump_threshold_mm = float(
             self.get_parameter('scan_jump_threshold_mm').value
@@ -436,7 +440,10 @@ class PickActionServer(Node):
         sample_period_s = float(self.get_parameter('scan_sample_period_s').value)
         sensor_index = int(self.get_parameter('scan_sensor_index').value)
 
-        future = self._start_tool_action_async('prepare', [0.0, speed_rpm])
+        future = self._start_tool_action_async(
+            'prepare',
+            [prepare_length_m, speed_rpm],
+        )
         if future is None:
             return None
 

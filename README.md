@@ -13,7 +13,7 @@ VALIDATING -> ALIGN_X -> FORWARD -> GRASP -> LIFT -> RETREAT -> LOWER -> DONE
 | 2D 雷达识别模式 | `lidar_recognition` | 用 `/scan` 识别目标，再用 `prepare` 做横向对齐 |
 | Odin + 单点传感器纠错模式 | `odin_sensor_projection` | 用 `/sensor_distances` 和 `/odin1/relocation` 计算夹爪纠错位移，再用 `prepare` 对齐 |
 | 无对齐模式 | `no_alignment` | 不读取识别/Odin/传感器数据，不纠错，不 `prepare`，直接前进夹取 |
-| 单点测距扫描无对齐模式 | `sensor_scan_no_alignment` | 先用 2 号单点测距传感器做夹爪水平慢扫，检测突变后再前进夹取 |
+| 单点测距扫描无对齐模式 | `sensor_scan_no_alignment` | 先用 1 号单点测距传感器做夹爪水平慢扫，检测突变后再前进夹取 |
 
 真实的 `/ares_tool_node/tool_action` 节点不在本仓库里，需要在 ARES 工作空间中启动。本仓库只包含 `ares_tool_interfaces` 接口包，供 `pick_action` 编译和调用。
 
@@ -67,7 +67,7 @@ alignment_mode: sensor_scan_no_alignment
 当前默认已经设置为：
 
 ```yaml
-alignment_mode: no_alignment
+alignment_mode: sensor_scan_no_alignment
 ```
 
 ## 启动方式
@@ -358,7 +358,7 @@ prepare args[0] = 0.0
 prepare args[1] = scan_prepare_speed_rpm
 ```
 
-也就是让夹爪机构做水平持续慢移扫描。它不读取 Odin，也不等待 2D 雷达识别；只读取 `/sensor_distances` 中配置的传感器，默认是索引 `2`。
+也就是让夹爪机构做水平持续慢移扫描。它不读取 Odin，也不等待 2D 雷达识别；只读取 `/sensor_distances` 中配置的传感器，默认是索引 `1`。
 
 流程：
 
@@ -369,6 +369,8 @@ VALIDATING:
 SENSOR_SCAN:
   调用 prepare([0.0, scan_prepare_speed_rpm]) 开始水平慢移
   读取 /sensor_distances[scan_sensor_index]
+  如果测距 <= scan_present_threshold_mm 并持续 scan_present_duration_s
+    认为夹爪已经在物体前方，停止慢移并进入 FORWARD
   如果相邻有效测距差值 >= scan_jump_threshold_mm
     继续慢移 scan_center_extra_time_s
     调用 scan_stop_action 停止慢移
@@ -379,16 +381,19 @@ FORWARD -> GRASP -> LIFT -> RETREAT -> LOWER -> DONE
 相关参数：
 
 ```yaml
-scan_sensor_index: 2
+scan_sensor_index: 1
 scan_sensor_max_age_s: 0.5
 scan_min_valid_mm: 20.0
 scan_max_valid_mm: 2000.0
-scan_jump_threshold_mm: 80.0
+scan_jump_threshold_mm: 150.0
+scan_present_threshold_mm: 250.0
+scan_present_duration_s: 0.2
 scan_prepare_speed_rpm: 30.0
-scan_center_extra_time_s: 0.25
+scan_center_extra_time_s: 0.05
 scan_timeout_s: 5.0
 scan_sample_period_s: 0.02
-scan_stop_action: fold
+scan_stop_action: prepare
+scan_stop_args: [0.0, 0.0]
 scan_stop_timeout_ms: 3000
 ```
 
@@ -396,11 +401,14 @@ scan_stop_timeout_ms: 3000
 
 | 参数 | 含义 |
 |---|---|
-| `scan_sensor_index` | 用哪个单点测距值扫描，默认 `2` |
+| `scan_sensor_index` | 用哪个单点测距值扫描，默认 `1` |
 | `scan_jump_threshold_mm` | 相邻有效距离突变阈值，单位 mm |
+| `scan_present_threshold_mm` | 已在物体前方的距离阈值，单位 mm |
+| `scan_present_duration_s` | 测距持续低于阈值多久后直接触发后续动作 |
 | `scan_prepare_speed_rpm` | 水平慢移速度，传给 `prepare` 的 `args[1]` |
 | `scan_center_extra_time_s` | 检测到突变后继续慢移的时间，用来移动到物体中心 |
-| `scan_stop_action` | 停止持续慢移的 spear 命令，默认 `fold` |
+| `scan_stop_action` | 停止持续慢移的 spear 命令，默认 `prepare` |
+| `scan_stop_args` | 停止命令参数，默认 `[0.0, 0.0]`，表示停止水平慢移 |
 | `scan_timeout_s` | 最长扫描时间，超时则本次 action 失败 |
 
 ## 四种模式状态对比
@@ -408,7 +416,7 @@ scan_stop_timeout_ms: 3000
 | 状态 | `lidar_recognition` | `odin_sensor_projection` | `no_alignment` | `sensor_scan_no_alignment` |
 |---|---|---|---|---|
 | `VALIDATING` | 等待 2D 雷达识别结果 | 等待 Odin 和传感器数据 | 只发布状态 | 只发布状态 |
-| `SENSOR_SCAN` | 无 | 无 | 无 | 2 号传感器水平慢扫 |
+| `SENSOR_SCAN` | 无 | 无 | 无 | 1 号传感器水平慢扫 |
 | `ALIGN_X` | 根据识别目标 x 对齐 | 根据纠错平移量对齐 | 跳过 | 跳过 |
 | `FORWARD` | 前进 | 前进 | 前进 | 前进 |
 | `GRASP` | 夹取 | 夹取 | 夹取 | 夹取 |

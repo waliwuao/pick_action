@@ -6,13 +6,14 @@
 VALIDATING -> ALIGN_X -> FORWARD -> GRASP -> LIFT -> RETREAT -> LOWER -> DONE
 ```
 
-当前支持 3 种模式：
+当前支持 4 种模式：
 
 | 模式 | `alignment_mode` | 用途 |
 |---|---|---|
 | 2D 雷达识别模式 | `lidar_recognition` | 用 `/scan` 识别目标，再用 `prepare` 做横向对齐 |
 | Odin + 单点传感器纠错模式 | `odin_sensor_projection` | 用 `/sensor_distances` 和 `/odin1/relocation` 计算夹爪纠错位移，再用 `prepare` 对齐 |
 | 无对齐模式 | `no_alignment` | 不读取识别/Odin/传感器数据，不纠错，不 `prepare`，直接前进夹取 |
+| 单点测距扫描无对齐模式 | `sensor_scan_no_alignment` | 先用 2 号单点测距传感器做夹爪水平慢扫，检测突变后再前进夹取 |
 
 真实的 `/ares_tool_node/tool_action` 节点不在本仓库里，需要在 ARES 工作空间中启动。本仓库只包含 `ares_tool_interfaces` 接口包，供 `pick_action` 编译和调用。
 
@@ -60,6 +61,7 @@ alignment_mode: no_alignment
 alignment_mode: lidar_recognition
 alignment_mode: odin_sensor_projection
 alignment_mode: no_alignment
+alignment_mode: sensor_scan_no_alignment
 ```
 
 当前默认已经设置为：
@@ -90,7 +92,7 @@ source install/setup.bash
 ros2 launch pick_action pick_action.launch.py use_synthetic:=true
 ```
 
-如果当前是 `odin_sensor_projection` 或 `no_alignment`，2D 雷达识别结果不会决定对齐逻辑；但 launch 仍会启动识别节点。
+如果当前是 `odin_sensor_projection`、`no_alignment` 或 `sensor_scan_no_alignment`，2D 雷达识别结果不会决定对齐逻辑；但 launch 仍会启动识别节点。
 
 ### 2. 触发夹取
 
@@ -102,7 +104,7 @@ ros2 action send_goal /pick_action pick_action_interfaces/action/PickSequence \
 说明：
 
 - 在 `lidar_recognition` 模式下，`expected_count` 会用于等待识别到指定数量目标。
-- 在 `odin_sensor_projection` 和 `no_alignment` 模式下，`expected_count` 基本只是 action 接口保留字段。
+- 在 `odin_sensor_projection`、`no_alignment` 和 `sensor_scan_no_alignment` 模式下，`expected_count` 基本只是 action 接口保留字段。
 
 ## 模式 1：2D 雷达识别模式
 
@@ -341,22 +343,83 @@ deadband_x_m
 prepare_timeout_ms
 ```
 
-## 三种模式状态对比
+## 模式 4：单点测距扫描无对齐模式
 
-| 状态 | `lidar_recognition` | `odin_sensor_projection` | `no_alignment` |
-|---|---|---|---|
-| `VALIDATING` | 等待 2D 雷达识别结果 | 等待 Odin 和传感器数据 | 只发布状态 |
-| `ALIGN_X` | 根据识别目标 x 对齐 | 根据纠错平移量对齐 | 跳过 |
-| `FORWARD` | 前进 | 前进 | 前进 |
-| `GRASP` | 夹取 | 夹取 | 夹取 |
-| `LIFT` | 抬升 | 抬升 | 抬升 |
-| `RETREAT` | 后退 | 后退 | 后退 |
-| `LOWER` | 下降 | 下降 | 下降 |
-| `DONE` | 完成 | 完成 | 完成 |
+配置：
+
+```yaml
+alignment_mode: sensor_scan_no_alignment
+```
+
+这个模式以 `TreeAction` 的 spear 控制语义为准：
+
+```text
+prepare args[0] = 0.0
+prepare args[1] = scan_prepare_speed_rpm
+```
+
+也就是让夹爪机构做水平持续慢移扫描。它不读取 Odin，也不等待 2D 雷达识别；只读取 `/sensor_distances` 中配置的传感器，默认是索引 `2`。
+
+流程：
+
+```text
+VALIDATING:
+  只发布状态，不等待识别/Odin
+
+SENSOR_SCAN:
+  调用 prepare([0.0, scan_prepare_speed_rpm]) 开始水平慢移
+  读取 /sensor_distances[scan_sensor_index]
+  如果相邻有效测距差值 >= scan_jump_threshold_mm
+    继续慢移 scan_center_extra_time_s
+    调用 scan_stop_action 停止慢移
+
+FORWARD -> GRASP -> LIFT -> RETREAT -> LOWER -> DONE
+```
+
+相关参数：
+
+```yaml
+scan_sensor_index: 2
+scan_sensor_max_age_s: 0.5
+scan_min_valid_mm: 20.0
+scan_max_valid_mm: 2000.0
+scan_jump_threshold_mm: 80.0
+scan_prepare_speed_rpm: 30.0
+scan_center_extra_time_s: 0.25
+scan_timeout_s: 5.0
+scan_sample_period_s: 0.02
+scan_stop_action: fold
+scan_stop_timeout_ms: 3000
+```
+
+含义：
+
+| 参数 | 含义 |
+|---|---|
+| `scan_sensor_index` | 用哪个单点测距值扫描，默认 `2` |
+| `scan_jump_threshold_mm` | 相邻有效距离突变阈值，单位 mm |
+| `scan_prepare_speed_rpm` | 水平慢移速度，传给 `prepare` 的 `args[1]` |
+| `scan_center_extra_time_s` | 检测到突变后继续慢移的时间，用来移动到物体中心 |
+| `scan_stop_action` | 停止持续慢移的 spear 命令，默认 `fold` |
+| `scan_timeout_s` | 最长扫描时间，超时则本次 action 失败 |
+
+## 四种模式状态对比
+
+| 状态 | `lidar_recognition` | `odin_sensor_projection` | `no_alignment` | `sensor_scan_no_alignment` |
+|---|---|---|---|---|
+| `VALIDATING` | 等待 2D 雷达识别结果 | 等待 Odin 和传感器数据 | 只发布状态 | 只发布状态 |
+| `SENSOR_SCAN` | 无 | 无 | 无 | 2 号传感器水平慢扫 |
+| `ALIGN_X` | 根据识别目标 x 对齐 | 根据纠错平移量对齐 | 跳过 | 跳过 |
+| `FORWARD` | 前进 | 前进 | 前进 | 前进 |
+| `GRASP` | 夹取 | 夹取 | 夹取 | 夹取 |
+| `LIFT` | 抬升 | 抬升 | 抬升 | 抬升 |
+| `RETREAT` | 后退 | 后退 | 后退 | 后退 |
+| `LOWER` | 下降 | 下降 | 下降 | 下降 |
+| `DONE` | 完成 | 完成 | 完成 | 完成 |
 
 ## 通用运动和夹取参数
 
-这些参数三个模式都会用到：
+这些参数四个模式都会用到：
 
 ```yaml
 tool_service: /ares_tool_node/tool_action
@@ -383,7 +446,7 @@ publish_rate_hz: 100.0
 
 | 名称 | 类型 | 方向 | 使用场景 |
 |---|---|---|---|
-| `/pick_action` | `pick_action_interfaces/action/PickSequence` | action server | 三种模式都用 |
+| `/pick_action` | `pick_action_interfaces/action/PickSequence` | action server | 四种模式都用 |
 | `/ares_tool_node/tool_action` | `ares_tool_interfaces/srv/ToolAction` | client | `prepare`、`grasp` |
 | `/t0x0111_` | `std_msgs/Float32MultiArray` | publish | 底盘前进/后退 |
 | `/t0x0112_` | `std_msgs/Float32MultiArray` | publish | 抬升/下降 |
@@ -391,7 +454,7 @@ publish_rate_hz: 100.0
 | `/scan` | `sensor_msgs/LaserScan` | subscribe | 2D 雷达识别模式 |
 | `/spear_recognition/result` | `std_msgs/String` JSON | subscribe | 2D 雷达识别模式 |
 | `/spear_recognition/markers` | `visualization_msgs/MarkerArray` | publish | 2D 雷达识别可视化 |
-| `/sensor_distances` | `std_msgs/Float32MultiArray` | subscribe | Odin + 单点传感器纠错模式 |
+| `/sensor_distances` | `std_msgs/Float32MultiArray` | subscribe | Odin + 单点传感器纠错模式、单点测距扫描无对齐模式 |
 | `/odin1/relocation` | `geometry_msgs/PoseStamped` | subscribe | Odin + 单点传感器纠错模式 |
 
 ## 常用检查命令
@@ -432,6 +495,7 @@ ros2 topic echo /spear_recognition/result
 
 - 支持环境：Ubuntu 24.04 / ROS 2 Jazzy。
 - `no_alignment` 模式最快，但不会做任何横向对齐或纠错，前进时间和初始位置要靠你保证。
+- `sensor_scan_no_alignment` 会在前进前做一次夹爪水平慢扫，但不会读取 Odin，也不会执行 `ALIGN_X` 对齐。
 - `odin_sensor_projection` 模式会使用 `sensor_3_index` 和 `sensor_5_index`，传感器 topic 中的数据单位是 mm。
 - `prepare(length)` 控制的是夹爪目标长度，不是直接位移；默认基准长度是 `0.3m`，允许范围是 `0.0m ~ 0.5m`。
 - `test_lift.py` 是手动硬件测试工具，不是自动化测试。

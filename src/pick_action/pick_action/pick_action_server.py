@@ -63,6 +63,18 @@ class PickActionServer(Node):
         self.declare_parameter('deadband_x_m', 0.005)
         self.declare_parameter('prepare_timeout_ms', 20000)
 
+        self.declare_parameter('scan_sensor_index', 2)
+        self.declare_parameter('scan_sensor_max_age_s', 0.5)
+        self.declare_parameter('scan_min_valid_mm', 20.0)
+        self.declare_parameter('scan_max_valid_mm', 2000.0)
+        self.declare_parameter('scan_jump_threshold_mm', 80.0)
+        self.declare_parameter('scan_prepare_speed_rpm', 30.0)
+        self.declare_parameter('scan_center_extra_time_s', 0.25)
+        self.declare_parameter('scan_timeout_s', 5.0)
+        self.declare_parameter('scan_sample_period_s', 0.02)
+        self.declare_parameter('scan_stop_action', 'fold')
+        self.declare_parameter('scan_stop_timeout_ms', 3000)
+
         self.declare_parameter('forward_speed_mps', 0.2)
         self.declare_parameter('forward_duration_s', 2.0)
         self.declare_parameter('direction_sign_y', -1.0)
@@ -199,6 +211,15 @@ class PickActionServer(Node):
             'no_alignment',
             'none',
             'direct',
+        )
+
+    def _uses_sensor_scan_no_alignment(self) -> bool:
+        mode = str(self.get_parameter('alignment_mode').value)
+        return mode.lower() in (
+            'sensor_scan_no_alignment',
+            'sensor_scan',
+            'scan_no_alignment',
+            'scan_direct',
         )
 
     def _goal_callback(self, goal_request: PickSequence.Goal) -> GoalResponse:
@@ -344,6 +365,127 @@ class PickActionServer(Node):
         self.get_logger().error('Tool %s timed out (%.1f s)' % (action, timeout_s))
         return False
 
+    def _start_tool_action_async(self, action: str, args: list[float]):
+        if not self._ensure_tool_available():
+            self.get_logger().error('Tool service unavailable')
+            return None
+
+        req = ToolAction.Request()
+        req.action = action
+        req.args = args[:4] + [0.0] * max(0, 4 - len(args))
+        self.get_logger().info(
+            'Starting tool %s asynchronously: args=%s' % (action, req.args)
+        )
+        return self._tool_client.call_async(req)
+
+    def _get_scan_sensor_distance_mm(self) -> tuple[float, float]:
+        now_s = self._now_sec()
+        with self._pose_lock:
+            distances = list(self._latest_distances)
+            receive_time_s = self._latest_sensor_receive_time_s
+
+        index = int(self.get_parameter('scan_sensor_index').value)
+        if index < 0 or index >= len(distances):
+            return math.nan, math.inf
+
+        age_s = now_s - receive_time_s
+        if not math.isfinite(age_s):
+            return math.nan, math.inf
+        return distances[index], age_s
+
+    def _is_valid_scan_distance(self, distance_mm: float, age_s: float) -> bool:
+        return (
+            math.isfinite(distance_mm)
+            and math.isfinite(age_s)
+            and age_s <= float(self.get_parameter('scan_sensor_max_age_s').value)
+            and distance_mm >= float(self.get_parameter('scan_min_valid_mm').value)
+            and distance_mm <= float(self.get_parameter('scan_max_valid_mm').value)
+        )
+
+    def _stop_scan_motion(self) -> bool:
+        stop_action = str(self.get_parameter('scan_stop_action').value)
+        stop_timeout = float(self.get_parameter('scan_stop_timeout_ms').value)
+        self.get_logger().info('Stopping sensor scan with tool %s' % stop_action)
+        return self._call_tool_action(stop_action, [0.0], stop_timeout)
+
+    def _run_sensor_scan(self, goal_handle) -> dict | None:
+        speed_rpm = float(self.get_parameter('scan_prepare_speed_rpm').value)
+        jump_threshold_mm = float(
+            self.get_parameter('scan_jump_threshold_mm').value
+        )
+        center_extra_time_s = float(
+            self.get_parameter('scan_center_extra_time_s').value
+        )
+        timeout_s = float(self.get_parameter('scan_timeout_s').value)
+        sample_period_s = float(self.get_parameter('scan_sample_period_s').value)
+        sensor_index = int(self.get_parameter('scan_sensor_index').value)
+
+        future = self._start_tool_action_async('prepare', [0.0, speed_rpm])
+        if future is None:
+            return None
+
+        start_s = time.monotonic()
+        previous_mm = math.nan
+        previous_age_s = math.inf
+        sample_count = 0
+        stopped = False
+
+        try:
+            while time.monotonic() - start_s < timeout_s:
+                if goal_handle.is_cancel_requested:
+                    self.get_logger().info('Cancelled during sensor scan')
+                    return None
+
+                current_mm, age_s = self._get_scan_sensor_distance_mm()
+                if not self._is_valid_scan_distance(current_mm, age_s):
+                    time.sleep(sample_period_s)
+                    continue
+
+                sample_count += 1
+                if self._is_valid_scan_distance(previous_mm, previous_age_s):
+                    delta_mm = current_mm - previous_mm
+                    if abs(delta_mm) >= jump_threshold_mm:
+                        elapsed_s = time.monotonic() - start_s
+                        self.get_logger().info(
+                            'Sensor scan jump detected: sensor[%d] %.1f -> %.1f '
+                            'mm, delta=%.1f mm, elapsed=%.3f s'
+                            % (
+                                sensor_index,
+                                previous_mm,
+                                current_mm,
+                                delta_mm,
+                                elapsed_s,
+                            )
+                        )
+                        time.sleep(max(0.0, center_extra_time_s))
+                        stopped = self._stop_scan_motion()
+                        return {
+                            'alignment_mode': 'sensor_scan_no_alignment',
+                            'scan_sensor_index': sensor_index,
+                            'scan_previous_mm': round(previous_mm, 3),
+                            'scan_current_mm': round(current_mm, 3),
+                            'scan_delta_mm': round(delta_mm, 3),
+                            'scan_abs_delta_mm': round(abs(delta_mm), 3),
+                            'scan_jump_threshold_mm': round(jump_threshold_mm, 3),
+                            'scan_elapsed_s': round(elapsed_s, 3),
+                            'scan_center_extra_time_s': round(center_extra_time_s, 3),
+                            'scan_sample_count': sample_count,
+                            'scan_stop_success': stopped,
+                        }
+
+                previous_mm = current_mm
+                previous_age_s = age_s
+                time.sleep(sample_period_s)
+
+            self.get_logger().error(
+                'Sensor scan timed out after %.2f s without jump >= %.1f mm'
+                % (timeout_s, jump_threshold_mm)
+            )
+            return None
+        finally:
+            if not stopped:
+                self._stop_scan_motion()
+
     def _run_timed_publish(self, speed: float, duration_s: float,
                            goal_handle) -> None:
         rate_hz = float(self.get_parameter('publish_rate_hz').value)
@@ -463,7 +605,9 @@ class PickActionServer(Node):
         start_time = time.monotonic()
         use_projection = self._uses_odin_sensor_projection()
         use_no_alignment = self._uses_no_alignment()
+        use_sensor_scan = self._uses_sensor_scan_no_alignment()
         projection_alignment = None
+        sensor_scan_result = None
 
         def feedback(state: str) -> None:
             elapsed = time.monotonic() - start_time
@@ -473,21 +617,31 @@ class PickActionServer(Node):
 
         # ---- VALIDATE ----
         feedback('VALIDATING')
-        if use_no_alignment:
+        if use_no_alignment or use_sensor_scan:
             tid = 0
             x_m = 0.0
             y_m = 0.0
+            mode_name = (
+                'sensor_scan_no_alignment'
+                if use_sensor_scan else 'no_alignment'
+            )
             self._publish_status(
                 'VALIDATING',
                 tid,
                 x_m,
                 y_m,
-                {'alignment_mode': 'no_alignment'},
+                {'alignment_mode': mode_name},
             )
-            self.get_logger().info(
-                'No-alignment mode: skipping recognition, Odin/sensor '
-                'correction, and ALIGN_X prepare'
-            )
+            if use_sensor_scan:
+                self.get_logger().info(
+                    'Sensor-scan no-alignment mode: skipping recognition and '
+                    'Odin correction; sensor scan will run before FORWARD'
+                )
+            else:
+                self.get_logger().info(
+                    'No-alignment mode: skipping recognition, Odin/sensor '
+                    'correction, and ALIGN_X prepare'
+                )
         elif use_projection:
             projection_alignment = self._wait_for_odin_sensor_alignment(
                 timeout_s=10.0
@@ -555,7 +709,32 @@ class PickActionServer(Node):
                 'Selected target %d: x=%.4f y=%.4f' % (tid, x_m, y_m)
             )
 
-        if not use_no_alignment:
+        if use_sensor_scan:
+            # ---- SENSOR_SCAN ----
+            feedback('SENSOR_SCAN')
+            self._publish_status(
+                'SENSOR_SCAN',
+                tid,
+                x_m,
+                y_m,
+                {'alignment_mode': 'sensor_scan_no_alignment'},
+            )
+            sensor_scan_result = self._run_sensor_scan(goal_handle)
+            if sensor_scan_result is None:
+                goal_handle.abort()
+                return PickSequence.Result(
+                    success=False,
+                    message='sensor scan failed or timed out',
+                )
+            self._publish_status(
+                'SENSOR_SCAN',
+                tid,
+                x_m,
+                y_m,
+                sensor_scan_result,
+            )
+
+        if not use_no_alignment and not use_sensor_scan:
             # ---- ALIGN_X ----
             feedback('ALIGN_X')
             if use_projection:

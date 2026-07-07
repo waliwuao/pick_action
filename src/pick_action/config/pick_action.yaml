@@ -6,6 +6,8 @@ pick_action_server:
     # - odin_sensor_projection: use Odin + sensor 3/5 correction, then prepare-align.
     # - no_alignment: skip recognition, Odin/sensor correction, and prepare-align,
     #   then go directly forward.
+    # - sensor_scan_no_alignment: horizontally scan with sensor 2, then run
+    #   no_alignment's forward/grasp/lift flow.
     alignment_mode: no_alignment
     result_topic: /spear_recognition/result
     tool_service: /ares_tool_node/tool_action
@@ -42,6 +44,21 @@ pick_action_server:
     direction_sign_x: -1.0
     deadband_x_m: 0.005
     prepare_timeout_ms: 20000
+
+    # ---- Sensor scan no-alignment mode ----
+    # Uses TreeAction semantics:
+    # prepare args[0]=0.0, args[1]=rpm means continuous horizontal motion.
+    scan_sensor_index: 2
+    scan_sensor_max_age_s: 0.5
+    scan_min_valid_mm: 20.0
+    scan_max_valid_mm: 2000.0
+    scan_jump_threshold_mm: 150.0
+    scan_prepare_speed_rpm: 30.0
+    scan_center_extra_time_s: 0.05
+    scan_timeout_s: 5.0
+    scan_sample_period_s: 0.02
+    scan_stop_action: fold
+    scan_stop_timeout_ms: 3000
 
     # ---- Forward approach ----
     forward_speed_mps: 0.2

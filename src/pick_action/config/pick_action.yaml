@@ -6,7 +6,7 @@ pick_action_server:
     # - odin_sensor_projection: use Odin + sensor 3/5 correction, then prepare-align.
     # - no_alignment: skip recognition, Odin/sensor correction, and prepare-align,
     #   then go directly forward.
-    # - sensor_scan_no_alignment: horizontally scan with sensor 2, then run
+    # - sensor_scan_no_alignment: horizontally scan with sensor 1, then run
     #   no_alignment's forward/grasp/lift flow.
     alignment_mode: sensor_scan_no_alignment
     result_topic: /spear_recognition/result
@@ -55,6 +55,8 @@ pick_action_server:
     scan_jump_threshold_mm: 300.0
     scan_present_threshold_mm: 150.0
     scan_present_duration_s: 0.1
+    debug_pre_scan_position_m: 0.45
+    debug_scan_target_position_m: 0.1
     scan_prepare_length_m: 0.05
     scan_prepare_speed_rpm: 30.0
     scan_center_extra_time_s: 0.05

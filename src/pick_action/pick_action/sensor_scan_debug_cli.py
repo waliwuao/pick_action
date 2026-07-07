@@ -213,6 +213,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument('--scan-jump-threshold-mm', type=float, default=float(_param(params, 'scan_jump_threshold_mm', 300.0)))
     parser.add_argument('--scan-present-threshold-mm', type=float, default=float(_param(params, 'scan_present_threshold_mm', 150.0)))
     parser.add_argument('--scan-present-duration-s', type=float, default=float(_param(params, 'scan_present_duration_s', 0.1)))
+    parser.add_argument('--debug-pre-scan-position-m', type=float, default=float(_param(params, 'debug_pre_scan_position_m', 0.45)))
+    parser.add_argument('--debug-scan-target-position-m', type=float, default=float(_param(params, 'debug_scan_target_position_m', 0.1)))
+    parser.add_argument('--debug-pre-scan-timeout-s', type=float, default=float(_param(params, 'prepare_timeout_ms', 20000)) / 1000.0)
     parser.add_argument('--scan-prepare-length-m', type=float, default=float(_param(params, 'scan_prepare_length_m', 0.05)))
     parser.add_argument('--scan-prepare-speed-rpm', type=float, default=float(_param(params, 'scan_prepare_speed_rpm', 30.0)))
     parser.add_argument('--scan-center-extra-time-s', type=float, default=float(_param(params, 'scan_center_extra_time_s', 0.05)))
@@ -239,8 +242,12 @@ def _print_config(args: argparse.Namespace) -> None:
     print('  sensor_topic = %s' % args.sensor_topic)
     print('  scan_sensor_index = %d' % args.scan_sensor_index)
     print('  tool_service = %s' % args.tool_service)
-    print('  scan start = prepare([%.4f, %.4f, 0.0, 0.0])' % (
-        args.scan_prepare_length_m,
+    print('  pre-scan position = prepare([%.4f, %.4f, 0.0, 0.0])' % (
+        args.debug_pre_scan_position_m,
+        args.scan_prepare_speed_rpm,
+    ))
+    print('  scan target = prepare([%.4f, %.4f, 0.0, 0.0])' % (
+        args.debug_scan_target_position_m,
         args.scan_prepare_speed_rpm,
     ))
     print('  scan stop = %s(%s)' % (args.scan_stop_action, args.scan_stop_args))
@@ -360,29 +367,43 @@ def _run_debug_flow(node: SensorScanDebugCli) -> None:
     args = node.args
 
     _show_sensor(node, '步骤 1/8: 启动前传感器')
-    if not _ask('步骤 2/8: 是否启动水平扫描 prepare([%.4f, %.4f])？' % (
-        args.scan_prepare_length_m,
-        args.scan_prepare_speed_rpm,
+    if not _ask('步骤 2/8: 是否先把夹爪运动到 %.4fm 位置？' % (
+        args.debug_pre_scan_position_m,
+    )):
+        print('取消本轮。')
+        return
+
+    if not node.call_tool(
+        'prepare',
+        [args.debug_pre_scan_position_m, args.scan_prepare_speed_rpm],
+        args.debug_pre_scan_timeout_s,
+    ):
+        print('预定位失败，本轮不继续。')
+        return
+
+    if not _ask('步骤 3/8: 是否启动慢速扫描到 %.4fm 位置？' % (
+        args.debug_scan_target_position_m,
     )):
         print('取消本轮。')
         return
 
     future = node.start_tool_async(
         'prepare',
-        [args.scan_prepare_length_m, args.scan_prepare_speed_rpm],
+        [args.debug_scan_target_position_m, args.scan_prepare_speed_rpm],
     )
     if future is None:
         return
+    print('已启动慢速扫描: prepare([%.4f, %.4f])' % (
+        args.debug_scan_target_position_m,
+        args.scan_prepare_speed_rpm,
+    ))
 
     trigger = None
     try:
         trigger = _monitor_scan(node)
-        if trigger and trigger.get('trigger') == 'jump':
-            print('按配置额外移动 %.3fs 到物体中心。' % args.scan_center_extra_time_s)
-            time.sleep(max(0.0, args.scan_center_extra_time_s))
     finally:
-        if _ask('步骤 3/8: 是否发送停止扫描命令？', default=True):
-            node.stop_scan_motion()
+        print('自动发送停止扫描命令。')
+        node.stop_scan_motion()
 
     if trigger is None:
         print('没有检测到触发条件，本轮不继续执行抓取动作。')

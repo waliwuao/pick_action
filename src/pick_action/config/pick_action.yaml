@@ -53,7 +53,7 @@ pick_action_server:
     scan_enable_jump_trigger: false
     scan_jump_threshold_mm: 300.0
     scan_present_threshold_mm: 300.0
-    scan_present_duration_s: 0.2
+    scan_present_duration_s: 0.1
     debug_pre_scan_position_m: 0.45
     debug_scan_target_position_m: 0.1
     scan_prepare_length_m: 0.05

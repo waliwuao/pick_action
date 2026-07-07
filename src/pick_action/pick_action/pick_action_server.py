@@ -79,6 +79,10 @@ class PickActionServer(Node):
         self.declare_parameter('scan_stop_action', 'prepare')
         self.declare_parameter('scan_stop_args', [0.0, 0.0])
         self.declare_parameter('scan_stop_timeout_ms', 3000)
+        self.declare_parameter(
+            'scan_debug_log_path',
+            '/tmp/pick_action_sensor_scan_debug.jsonl',
+        )
 
         self.declare_parameter('forward_speed_mps', 0.2)
         self.declare_parameter('forward_duration_s', 2.0)
@@ -106,6 +110,7 @@ class PickActionServer(Node):
         self._latest_pose_receive_time_s = math.nan
         self._pose_lock = threading.Lock()
         self._callback_group = ReentrantCallbackGroup()
+        self._active_scan_debug_id: str | None = None
 
         self._chassis_pub = self.create_publisher(
             Float32MultiArray,
@@ -347,6 +352,11 @@ class PickActionServer(Node):
                           timeout_ms: float) -> bool:
         if not self._ensure_tool_available():
             self.get_logger().error('Tool service unavailable')
+            self._write_scan_debug_log(
+                'tool_unavailable',
+                action=action,
+                args=args,
+            )
             return False
 
         req = ToolAction.Request()
@@ -354,11 +364,44 @@ class PickActionServer(Node):
         req.args = args[:4] + [0.0] * max(0, 4 - len(args))
 
         timeout_s = timeout_ms / 1000.0
+        self._write_scan_debug_log(
+            'tool_call_start',
+            action=action,
+            args=list(req.args),
+            timeout_s=timeout_s,
+        )
         future = self._tool_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_s)
+        deadline_s = time.monotonic() + timeout_s
+        while rclpy.ok() and not future.done() and time.monotonic() < deadline_s:
+            time.sleep(0.02)
 
-        if future.done() and future.result() is not None:
-            r = future.result()
+        if future.done():
+            try:
+                r = future.result()
+            except Exception as exc:
+                self.get_logger().error(
+                    'Tool %s raised exception: %s' % (action, exc)
+                )
+                self._write_scan_debug_log(
+                    'tool_call_exception',
+                    action=action,
+                    error=str(exc),
+                )
+                return False
+            if r is None:
+                self.get_logger().error('Tool %s returned no result' % action)
+                self._write_scan_debug_log(
+                    'tool_call_no_result',
+                    action=action,
+                )
+                return False
+            self._write_scan_debug_log(
+                'tool_call_result',
+                action=action,
+                success=bool(r.success),
+                ret=int(r.ret),
+                message=str(r.message),
+            )
             if r.success:
                 self.get_logger().info('Tool %s completed' % action)
                 return True
@@ -368,11 +411,22 @@ class PickActionServer(Node):
             )
             return False
         self.get_logger().error('Tool %s timed out (%.1f s)' % (action, timeout_s))
+        self._write_scan_debug_log(
+            'tool_call_timeout',
+            action=action,
+            timeout_s=timeout_s,
+        )
         return False
 
     def _start_tool_action_async(self, action: str, args: list[float]):
         if not self._ensure_tool_available():
             self.get_logger().error('Tool service unavailable')
+            self._write_scan_debug_log(
+                'tool_unavailable',
+                action=action,
+                args=args,
+                async_call=True,
+            )
             return None
 
         req = ToolAction.Request()
@@ -380,6 +434,11 @@ class PickActionServer(Node):
         req.args = args[:4] + [0.0] * max(0, 4 - len(args))
         self.get_logger().info(
             'Starting tool %s asynchronously: args=%s' % (action, req.args)
+        )
+        self._write_scan_debug_log(
+            'tool_async_start',
+            action=action,
+            args=list(req.args),
         )
         return self._tool_client.call_async(req)
 
@@ -418,6 +477,46 @@ class PickActionServer(Node):
         )
         return self._call_tool_action(stop_action, stop_args, stop_timeout)
 
+    def _json_safe(self, value):
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, (str, int, bool)) or value is None:
+            return value
+        if isinstance(value, list):
+            return [self._json_safe(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._json_safe(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                str(key): self._json_safe(item)
+                for key, item in value.items()
+            }
+        return str(value)
+
+    def _write_scan_debug_log(self, event: str, **fields) -> None:
+        path = str(self.get_parameter('scan_debug_log_path').value)
+        if not path:
+            return
+        record = {
+            'stamp_s': self._json_safe(self._now_sec()),
+            'monotonic_s': self._json_safe(time.monotonic()),
+            'event': event,
+        }
+        if self._active_scan_debug_id is not None:
+            record['scan_id'] = self._active_scan_debug_id
+        record.update({
+            key: self._json_safe(value)
+            for key, value in fields.items()
+        })
+        try:
+            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+            with open(path, 'a', encoding='utf-8') as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + '\n')
+        except OSError as exc:
+            self.get_logger().warn(
+                'Failed to write sensor scan debug log %s: %s' % (path, exc)
+            )
+
     def _run_sensor_scan(self, goal_handle) -> dict | None:
         pre_scan_position_m = float(
             self.get_parameter('debug_pre_scan_position_m').value
@@ -432,11 +531,31 @@ class PickActionServer(Node):
         present_duration_s = float(
             self.get_parameter('scan_present_duration_s').value
         )
+        enable_jump_trigger = bool(
+            self.get_parameter('scan_enable_jump_trigger').value
+        )
+        jump_threshold_mm = float(
+            self.get_parameter('scan_jump_threshold_mm').value
+        )
         prepare_timeout_ms = float(self.get_parameter('prepare_timeout_ms').value)
         timeout_s = float(self.get_parameter('scan_timeout_s').value)
         sample_period_s = float(self.get_parameter('scan_sample_period_s').value)
         sensor_index = int(self.get_parameter('scan_sensor_index').value)
 
+        self._active_scan_debug_id = 'scan-%.6f' % time.time()
+        self._write_scan_debug_log(
+            'scan_start',
+            sensor_index=sensor_index,
+            pre_scan_position_m=pre_scan_position_m,
+            scan_target_position_m=scan_target_position_m,
+            speed_rpm=speed_rpm,
+            present_threshold_mm=present_threshold_mm,
+            present_duration_s=present_duration_s,
+            enable_jump_trigger=enable_jump_trigger,
+            jump_threshold_mm=jump_threshold_mm,
+            timeout_s=timeout_s,
+            sample_period_s=sample_period_s,
+        )
         self.get_logger().info(
             'Sensor scan pre-position: prepare([%.4f, %.4f])'
             % (pre_scan_position_m, speed_rpm)
@@ -447,6 +566,8 @@ class PickActionServer(Node):
             prepare_timeout_ms,
         ):
             self.get_logger().error('Sensor scan pre-position failed')
+            self._write_scan_debug_log('scan_pre_position_failed')
+            self._active_scan_debug_id = None
             return None
 
         self.get_logger().info(
@@ -458,10 +579,14 @@ class PickActionServer(Node):
             [scan_target_position_m, speed_rpm],
         )
         if future is None:
+            self._write_scan_debug_log('scan_target_start_failed')
+            self._active_scan_debug_id = None
             return None
 
         start_s = time.monotonic()
         present_start_s = math.nan
+        previous_mm = math.nan
+        previous_age_s = math.inf
         sample_count = 0
         stopped = False
 
@@ -469,15 +594,24 @@ class PickActionServer(Node):
             while time.monotonic() - start_s < timeout_s:
                 if goal_handle.is_cancel_requested:
                     self.get_logger().info('Cancelled during sensor scan')
+                    self._write_scan_debug_log('scan_cancelled')
                     return None
 
                 current_mm, age_s = self._get_scan_sensor_distance_mm()
                 if not self._is_valid_scan_distance(current_mm, age_s):
+                    self._write_scan_debug_log(
+                        'scan_sample_invalid',
+                        sensor_index=sensor_index,
+                        distance_mm=current_mm,
+                        age_s=age_s,
+                    )
                     time.sleep(sample_period_s)
                     continue
 
                 sample_count += 1
                 now_monotonic_s = time.monotonic()
+                present_elapsed_s = 0.0
+                delta_mm = math.nan
                 if current_mm <= present_threshold_mm:
                     if not math.isfinite(present_start_s):
                         present_start_s = now_monotonic_s
@@ -495,6 +629,17 @@ class PickActionServer(Node):
                             )
                         )
                         stopped = self._stop_scan_motion()
+                        self._write_scan_debug_log(
+                            'scan_trigger',
+                            trigger='object_present',
+                            sensor_index=sensor_index,
+                            distance_mm=current_mm,
+                            age_s=age_s,
+                            present_elapsed_s=present_elapsed_s,
+                            elapsed_s=scan_elapsed_s,
+                            sample_count=sample_count,
+                            stop_success=stopped,
+                        )
                         return {
                             'alignment_mode': 'sensor_scan_no_alignment',
                             'scan_trigger': 'object_present',
@@ -518,6 +663,67 @@ class PickActionServer(Node):
                 else:
                     present_start_s = math.nan
 
+                if (
+                    enable_jump_trigger
+                    and self._is_valid_scan_distance(previous_mm, previous_age_s)
+                ):
+                    delta_mm = current_mm - previous_mm
+                    if abs(delta_mm) >= jump_threshold_mm:
+                        scan_elapsed_s = now_monotonic_s - start_s
+                        self.get_logger().info(
+                            'Sensor scan jump trigger: sensor[%d] previous=%.1f '
+                            'current=%.1f delta=%.1f mm'
+                            % (
+                                sensor_index,
+                                previous_mm,
+                                current_mm,
+                                delta_mm,
+                            )
+                        )
+                        stopped = self._stop_scan_motion()
+                        self._write_scan_debug_log(
+                            'scan_trigger',
+                            trigger='jump',
+                            sensor_index=sensor_index,
+                            previous_mm=previous_mm,
+                            distance_mm=current_mm,
+                            age_s=age_s,
+                            delta_mm=delta_mm,
+                            elapsed_s=scan_elapsed_s,
+                            sample_count=sample_count,
+                            stop_success=stopped,
+                        )
+                        return {
+                            'alignment_mode': 'sensor_scan_no_alignment',
+                            'scan_trigger': 'jump',
+                            'scan_sensor_index': sensor_index,
+                            'scan_pre_position_m': round(pre_scan_position_m, 4),
+                            'scan_target_position_m': round(
+                                scan_target_position_m, 4
+                            ),
+                            'scan_previous_mm': round(previous_mm, 3),
+                            'scan_current_mm': round(current_mm, 3),
+                            'scan_delta_mm': round(delta_mm, 3),
+                            'scan_jump_threshold_mm': round(
+                                jump_threshold_mm, 3
+                            ),
+                            'scan_elapsed_s': round(scan_elapsed_s, 3),
+                            'scan_sample_count': sample_count,
+                            'scan_stop_success': stopped,
+                        }
+
+                self._write_scan_debug_log(
+                    'scan_sample',
+                    sensor_index=sensor_index,
+                    sample_count=sample_count,
+                    distance_mm=current_mm,
+                    age_s=age_s,
+                    delta_mm=delta_mm,
+                    present_elapsed_s=present_elapsed_s,
+                )
+                previous_mm = current_mm
+                previous_age_s = age_s
+
                 time.sleep(sample_period_s)
 
             self.get_logger().error(
@@ -525,10 +731,22 @@ class PickActionServer(Node):
                 'for %.3f s'
                 % (timeout_s, present_threshold_mm, present_duration_s)
             )
+            self._write_scan_debug_log(
+                'scan_timeout',
+                timeout_s=timeout_s,
+                present_threshold_mm=present_threshold_mm,
+                present_duration_s=present_duration_s,
+                sample_count=sample_count,
+            )
             return None
         finally:
             if not stopped:
-                self._stop_scan_motion()
+                stop_success = self._stop_scan_motion()
+                self._write_scan_debug_log(
+                    'scan_final_stop',
+                    stop_success=stop_success,
+                )
+            self._active_scan_debug_id = None
 
     def _run_timed_publish(self, speed: float, duration_s: float,
                            goal_handle) -> None:

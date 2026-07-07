@@ -57,13 +57,14 @@ pick_action_server:
     debug_pre_scan_position_m: 0.45
     debug_scan_target_position_m: 0.2
     scan_prepare_length_m: 0.05
-    scan_prepare_speed_rpm: 100.0
+    scan_prepare_speed_rpm: 80.0
     scan_center_extra_time_s: 0.0
     scan_timeout_s: 5.0
     scan_sample_period_s: 0.02
     scan_stop_action: prepare
     scan_stop_args: [0.0, 0.0]
     scan_stop_timeout_ms: 3000
+    scan_debug_log_path: /tmp/pick_action_sensor_scan_debug.jsonl
 
     # ---- Forward approach ----
     forward_speed_mps: 0.2

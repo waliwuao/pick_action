@@ -69,6 +69,8 @@ class PickActionServer(Node):
         self.declare_parameter('scan_jump_threshold_mm', 80.0)
         self.declare_parameter('scan_present_threshold_mm', 250.0)
         self.declare_parameter('scan_present_duration_s', 0.2)
+        self.declare_parameter('debug_pre_scan_position_m', 0.45)
+        self.declare_parameter('debug_scan_target_position_m', 0.1)
         self.declare_parameter('scan_prepare_length_m', 0.05)
         self.declare_parameter('scan_prepare_speed_rpm', 30.0)
         self.declare_parameter('scan_center_extra_time_s', 0.25)
@@ -417,39 +419,48 @@ class PickActionServer(Node):
         return self._call_tool_action(stop_action, stop_args, stop_timeout)
 
     def _run_sensor_scan(self, goal_handle) -> dict | None:
-        prepare_length_m = float(
-            self.get_parameter('scan_prepare_length_m').value
+        pre_scan_position_m = float(
+            self.get_parameter('debug_pre_scan_position_m').value
+        )
+        scan_target_position_m = float(
+            self.get_parameter('debug_scan_target_position_m').value
         )
         speed_rpm = float(self.get_parameter('scan_prepare_speed_rpm').value)
-        jump_threshold_mm = float(
-            self.get_parameter('scan_jump_threshold_mm').value
-        )
-        enable_jump_trigger = bool(
-            self.get_parameter('scan_enable_jump_trigger').value
-        )
         present_threshold_mm = float(
             self.get_parameter('scan_present_threshold_mm').value
         )
         present_duration_s = float(
             self.get_parameter('scan_present_duration_s').value
         )
-        center_extra_time_s = float(
-            self.get_parameter('scan_center_extra_time_s').value
-        )
+        prepare_timeout_ms = float(self.get_parameter('prepare_timeout_ms').value)
         timeout_s = float(self.get_parameter('scan_timeout_s').value)
         sample_period_s = float(self.get_parameter('scan_sample_period_s').value)
         sensor_index = int(self.get_parameter('scan_sensor_index').value)
 
+        self.get_logger().info(
+            'Sensor scan pre-position: prepare([%.4f, %.4f])'
+            % (pre_scan_position_m, speed_rpm)
+        )
+        if not self._call_tool_action(
+            'prepare',
+            [pre_scan_position_m, speed_rpm],
+            prepare_timeout_ms,
+        ):
+            self.get_logger().error('Sensor scan pre-position failed')
+            return None
+
+        self.get_logger().info(
+            'Sensor scan target: prepare([%.4f, %.4f])'
+            % (scan_target_position_m, speed_rpm)
+        )
         future = self._start_tool_action_async(
             'prepare',
-            [prepare_length_m, speed_rpm],
+            [scan_target_position_m, speed_rpm],
         )
         if future is None:
             return None
 
         start_s = time.monotonic()
-        previous_mm = math.nan
-        previous_age_s = math.inf
         present_start_s = math.nan
         sample_count = 0
         stopped = False
@@ -488,6 +499,10 @@ class PickActionServer(Node):
                             'alignment_mode': 'sensor_scan_no_alignment',
                             'scan_trigger': 'object_present',
                             'scan_sensor_index': sensor_index,
+                            'scan_pre_position_m': round(pre_scan_position_m, 4),
+                            'scan_target_position_m': round(
+                                scan_target_position_m, 4
+                            ),
                             'scan_current_mm': round(current_mm, 3),
                             'scan_present_threshold_mm': round(
                                 present_threshold_mm, 3
@@ -503,43 +518,6 @@ class PickActionServer(Node):
                 else:
                     present_start_s = math.nan
 
-                if (
-                    enable_jump_trigger
-                    and self._is_valid_scan_distance(previous_mm, previous_age_s)
-                ):
-                    delta_mm = current_mm - previous_mm
-                    if abs(delta_mm) >= jump_threshold_mm:
-                        elapsed_s = now_monotonic_s - start_s
-                        self.get_logger().info(
-                            'Sensor scan jump detected: sensor[%d] %.1f -> %.1f '
-                            'mm, delta=%.1f mm, elapsed=%.3f s'
-                            % (
-                                sensor_index,
-                                previous_mm,
-                                current_mm,
-                                delta_mm,
-                                elapsed_s,
-                            )
-                        )
-                        time.sleep(max(0.0, center_extra_time_s))
-                        stopped = self._stop_scan_motion()
-                        return {
-                            'alignment_mode': 'sensor_scan_no_alignment',
-                            'scan_trigger': 'jump',
-                            'scan_sensor_index': sensor_index,
-                            'scan_previous_mm': round(previous_mm, 3),
-                            'scan_current_mm': round(current_mm, 3),
-                            'scan_delta_mm': round(delta_mm, 3),
-                            'scan_abs_delta_mm': round(abs(delta_mm), 3),
-                            'scan_jump_threshold_mm': round(jump_threshold_mm, 3),
-                            'scan_elapsed_s': round(elapsed_s, 3),
-                            'scan_center_extra_time_s': round(center_extra_time_s, 3),
-                            'scan_sample_count': sample_count,
-                            'scan_stop_success': stopped,
-                        }
-
-                previous_mm = current_mm
-                previous_age_s = age_s
                 time.sleep(sample_period_s)
 
             self.get_logger().error(

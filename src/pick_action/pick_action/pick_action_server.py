@@ -65,6 +65,7 @@ class PickActionServer(Node):
 
         self.declare_parameter('scan_sensor_index', 1)
         self.declare_parameter('scan_sensor_max_age_s', 0.5)
+        self.declare_parameter('scan_enable_jump_trigger', False)
         self.declare_parameter('scan_jump_threshold_mm', 80.0)
         self.declare_parameter('scan_present_threshold_mm', 250.0)
         self.declare_parameter('scan_present_duration_s', 0.2)
@@ -423,6 +424,9 @@ class PickActionServer(Node):
         jump_threshold_mm = float(
             self.get_parameter('scan_jump_threshold_mm').value
         )
+        enable_jump_trigger = bool(
+            self.get_parameter('scan_enable_jump_trigger').value
+        )
         present_threshold_mm = float(
             self.get_parameter('scan_present_threshold_mm').value
         )
@@ -499,7 +503,10 @@ class PickActionServer(Node):
                 else:
                     present_start_s = math.nan
 
-                if self._is_valid_scan_distance(previous_mm, previous_age_s):
+                if (
+                    enable_jump_trigger
+                    and self._is_valid_scan_distance(previous_mm, previous_age_s)
+                ):
                     delta_mm = current_mm - previous_mm
                     if abs(delta_mm) >= jump_threshold_mm:
                         elapsed_s = now_monotonic_s - start_s
@@ -536,8 +543,9 @@ class PickActionServer(Node):
                 time.sleep(sample_period_s)
 
             self.get_logger().error(
-                'Sensor scan timed out after %.2f s without jump >= %.1f mm'
-                % (timeout_s, jump_threshold_mm)
+                'Sensor scan timed out after %.2f s without distance <= %.1f mm '
+                'for %.3f s'
+                % (timeout_s, present_threshold_mm, present_duration_s)
             )
             return None
         finally:

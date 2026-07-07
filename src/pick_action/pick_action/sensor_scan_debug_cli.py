@@ -206,6 +206,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument('--sensor-count', type=int, default=int(_param(params, 'sensor_count', 8)))
     parser.add_argument('--scan-sensor-index', type=int, default=int(_param(params, 'scan_sensor_index', 1)))
     parser.add_argument('--scan-sensor-max-age-s', type=float, default=float(_param(params, 'scan_sensor_max_age_s', 0.5)))
+    parser.add_argument('--scan-enable-jump-trigger', action=argparse.BooleanOptionalAction, default=bool(_param(params, 'scan_enable_jump_trigger', False)))
     parser.add_argument('--scan-jump-threshold-mm', type=float, default=float(_param(params, 'scan_jump_threshold_mm', 300.0)))
     parser.add_argument('--scan-present-threshold-mm', type=float, default=float(_param(params, 'scan_present_threshold_mm', 150.0)))
     parser.add_argument('--scan-present-duration-s', type=float, default=float(_param(params, 'scan_present_duration_s', 0.1)))
@@ -251,7 +252,10 @@ def _print_config(args: argparse.Namespace) -> None:
         args.scan_present_threshold_mm,
         args.scan_present_duration_s,
     ))
-    print('  jump trigger: abs(delta) >= %.3f mm' % args.scan_jump_threshold_mm)
+    print('  jump trigger: %s, abs(delta) >= %.3f mm' % (
+        'enabled' if args.scan_enable_jump_trigger else 'disabled',
+        args.scan_jump_threshold_mm,
+    ))
     print('  forward: speed %.3f * sign %.1f for %.3f s' % (
         args.forward_speed_mps,
         args.direction_sign_y,
@@ -324,7 +328,10 @@ def _monitor_scan(node: SensorScanDebugCli) -> dict[str, Any] | None:
             present_start_s = math.nan
 
         delta_mm = math.nan
-        if node.is_valid_scan_distance(previous_mm, previous_age_s):
+        if (
+            args.scan_enable_jump_trigger
+            and node.is_valid_scan_distance(previous_mm, previous_age_s)
+        ):
             delta_mm = current_mm - previous_mm
             if abs(delta_mm) >= args.scan_jump_threshold_mm:
                 print(

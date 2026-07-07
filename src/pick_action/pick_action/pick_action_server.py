@@ -65,8 +65,6 @@ class PickActionServer(Node):
 
         self.declare_parameter('scan_sensor_index', 1)
         self.declare_parameter('scan_sensor_max_age_s', 0.5)
-        self.declare_parameter('scan_min_valid_mm', 20.0)
-        self.declare_parameter('scan_max_valid_mm', 2000.0)
         self.declare_parameter('scan_jump_threshold_mm', 80.0)
         self.declare_parameter('scan_present_threshold_mm', 250.0)
         self.declare_parameter('scan_present_duration_s', 0.2)
@@ -402,8 +400,6 @@ class PickActionServer(Node):
             math.isfinite(distance_mm)
             and math.isfinite(age_s)
             and age_s <= float(self.get_parameter('scan_sensor_max_age_s').value)
-            and distance_mm >= float(self.get_parameter('scan_min_valid_mm').value)
-            and distance_mm <= float(self.get_parameter('scan_max_valid_mm').value)
         )
 
     def _stop_scan_motion(self) -> bool:

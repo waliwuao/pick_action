@@ -50,10 +50,8 @@ pick_action_server:
     # prepare args[0]=length(m), args[1]=rpm.
     scan_sensor_index: 1
     scan_sensor_max_age_s: 0.5
-    scan_min_valid_mm: 20.0
-    scan_max_valid_mm: 2000.0
     scan_jump_threshold_mm: 300.0
-    scan_present_threshold_mm: 150.0
+    scan_present_threshold_mm: 300.0
     scan_present_duration_s: 0.0
     debug_pre_scan_position_m: 0.45
     debug_scan_target_position_m: 0.1

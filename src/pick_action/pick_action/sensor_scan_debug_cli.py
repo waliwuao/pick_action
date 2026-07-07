@@ -113,8 +113,6 @@ class SensorScanDebugCli(Node):
             math.isfinite(distance_mm)
             and math.isfinite(age_s)
             and age_s <= self.args.scan_sensor_max_age_s
-            and distance_mm >= self.args.scan_min_valid_mm
-            and distance_mm <= self.args.scan_max_valid_mm
         )
 
     def wait_for_tool_service(self) -> bool:
@@ -208,8 +206,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument('--sensor-count', type=int, default=int(_param(params, 'sensor_count', 8)))
     parser.add_argument('--scan-sensor-index', type=int, default=int(_param(params, 'scan_sensor_index', 1)))
     parser.add_argument('--scan-sensor-max-age-s', type=float, default=float(_param(params, 'scan_sensor_max_age_s', 0.5)))
-    parser.add_argument('--scan-min-valid-mm', type=float, default=float(_param(params, 'scan_min_valid_mm', 20.0)))
-    parser.add_argument('--scan-max-valid-mm', type=float, default=float(_param(params, 'scan_max_valid_mm', 2000.0)))
     parser.add_argument('--scan-jump-threshold-mm', type=float, default=float(_param(params, 'scan_jump_threshold_mm', 300.0)))
     parser.add_argument('--scan-present-threshold-mm', type=float, default=float(_param(params, 'scan_present_threshold_mm', 150.0)))
     parser.add_argument('--scan-present-duration-s', type=float, default=float(_param(params, 'scan_present_duration_s', 0.1)))

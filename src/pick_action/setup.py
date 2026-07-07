@@ -28,6 +28,7 @@ setup(
             'synthetic_scan_node = pick_action.synthetic_scan_node:main',
             'trigger_pick = pick_action.trigger_pick:main',
             'test_lift = pick_action.test_lift:main',
+            'sensor_scan_debug_cli = pick_action.sensor_scan_debug_cli:main',
         ],
     },
 )

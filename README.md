@@ -354,11 +354,11 @@ alignment_mode: sensor_scan_no_alignment
 这个模式以 `TreeAction` 的 spear 控制语义为准：
 
 ```text
-prepare args[0] = scan_prepare_length_m
+prepare args[0] = debug_scan_target_position_m
 prepare args[1] = scan_prepare_speed_rpm
 ```
 
-也就是让夹爪机构按配置长度和速度做水平移动扫描。它不读取 Odin，也不等待 2D 雷达识别；只读取 `/sensor_distances` 中配置的传感器，默认是索引 `1`。
+也就是让夹爪机构按配置目标位置和速度做水平移动扫描。它不读取 Odin，也不等待 2D 雷达识别；只读取 `/sensor_distances` 中配置的传感器，默认是索引 `1`。
 
 流程：
 
@@ -367,7 +367,7 @@ VALIDATING:
   只发布状态，不等待识别/Odin
 
 SENSOR_SCAN:
-  调用 prepare([scan_prepare_length_m, scan_prepare_speed_rpm]) 开始水平移动
+  调用 prepare([debug_scan_target_position_m, scan_prepare_speed_rpm]) 直接开始慢速扫描
   读取 /sensor_distances[scan_sensor_index]
   如果测距 <= scan_present_threshold_mm 并持续 scan_present_duration_s
     认为夹爪已经在物体前方，停止慢移并进入 FORWARD
@@ -388,6 +388,7 @@ scan_max_valid_mm: 2000.0
 scan_jump_threshold_mm: 300.0
 scan_present_threshold_mm: 150.0
 scan_present_duration_s: 0.1
+debug_scan_target_position_m: 0.45
 scan_prepare_length_m: 0.05
 scan_prepare_speed_rpm: 30.0
 scan_center_extra_time_s: 0.05
@@ -406,7 +407,8 @@ scan_stop_timeout_ms: 3000
 | `scan_jump_threshold_mm` | 相邻有效距离突变阈值，单位 mm |
 | `scan_present_threshold_mm` | 已在物体前方的距离阈值，单位 mm |
 | `scan_present_duration_s` | 测距持续低于阈值多久后直接触发后续动作 |
-| `scan_prepare_length_m` | 扫描启动时传给 `prepare` 的 `args[0]`，单位 m |
+| `debug_scan_target_position_m` | 扫描启动时传给 `prepare` 的 `args[0]`，单位 m |
+| `scan_prepare_length_m` | 备用参数，当前主流程不使用 |
 | `scan_prepare_speed_rpm` | 水平慢移速度，传给 `prepare` 的 `args[1]` |
 | `scan_center_extra_time_s` | 检测到突变后继续慢移的时间，用来移动到物体中心 |
 | `scan_stop_action` | 停止持续慢移的 spear 命令，默认 `prepare` |

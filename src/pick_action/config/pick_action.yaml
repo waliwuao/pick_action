@@ -53,11 +53,9 @@ pick_action_server:
     scan_enable_jump_trigger: false
     scan_jump_threshold_mm: 300.0
     scan_present_threshold_mm: 300.0
-    scan_present_duration_s: 0.03
-    debug_pre_scan_position_m: 0.1
+    scan_present_duration_s: 0.025
     debug_scan_target_position_m: 0.45
     scan_prepare_length_m: 0.05
-    scan_home_speed_rpm: 120.0
     scan_prepare_speed_rpm: 100.0
     scan_center_extra_time_s: 0.0
     scan_timeout_s: 5.0

@@ -69,10 +69,8 @@ class PickActionServer(Node):
         self.declare_parameter('scan_jump_threshold_mm', 80.0)
         self.declare_parameter('scan_present_threshold_mm', 250.0)
         self.declare_parameter('scan_present_duration_s', 0.2)
-        self.declare_parameter('debug_pre_scan_position_m', 0.01)
         self.declare_parameter('debug_scan_target_position_m', 0.5)
         self.declare_parameter('scan_prepare_length_m', 0.05)
-        self.declare_parameter('scan_home_speed_rpm', 160.0)
         self.declare_parameter('scan_prepare_speed_rpm', 30.0)
         self.declare_parameter('scan_center_extra_time_s', 0.25)
         self.declare_parameter('scan_timeout_s', 5.0)
@@ -523,13 +521,9 @@ class PickActionServer(Node):
             )
 
     def _run_sensor_scan(self, goal_handle) -> dict | None:
-        pre_scan_position_m = float(
-            self.get_parameter('debug_pre_scan_position_m').value
-        )
         scan_target_position_m = float(
             self.get_parameter('debug_scan_target_position_m').value
         )
-        home_speed_rpm = float(self.get_parameter('scan_home_speed_rpm').value)
         scan_speed_rpm = float(self.get_parameter('scan_prepare_speed_rpm').value)
         present_threshold_mm = float(
             self.get_parameter('scan_present_threshold_mm').value
@@ -543,7 +537,6 @@ class PickActionServer(Node):
         jump_threshold_mm = float(
             self.get_parameter('scan_jump_threshold_mm').value
         )
-        prepare_timeout_ms = float(self.get_parameter('prepare_timeout_ms').value)
         timeout_s = float(self.get_parameter('scan_timeout_s').value)
         sample_period_s = float(self.get_parameter('scan_sample_period_s').value)
         sensor_index = int(self.get_parameter('scan_sensor_index').value)
@@ -552,9 +545,7 @@ class PickActionServer(Node):
         self._write_scan_debug_log(
             'scan_start',
             sensor_index=sensor_index,
-            pre_scan_position_m=pre_scan_position_m,
             scan_target_position_m=scan_target_position_m,
-            home_speed_rpm=home_speed_rpm,
             scan_speed_rpm=scan_speed_rpm,
             present_threshold_mm=present_threshold_mm,
             present_duration_s=present_duration_s,
@@ -563,20 +554,6 @@ class PickActionServer(Node):
             timeout_s=timeout_s,
             sample_period_s=sample_period_s,
         )
-        self.get_logger().info(
-            'Sensor scan pre-position: prepare([%.4f, %.4f])'
-            % (pre_scan_position_m, home_speed_rpm)
-        )
-        if not self._call_tool_action(
-            'prepare',
-            [pre_scan_position_m, home_speed_rpm],
-            prepare_timeout_ms,
-        ):
-            self.get_logger().error('Sensor scan pre-position failed')
-            self._write_scan_debug_log('scan_pre_position_failed')
-            self._active_scan_debug_id = None
-            return None
-
         self.get_logger().info(
             'Sensor scan target: prepare([%.4f, %.4f])'
             % (scan_target_position_m, scan_speed_rpm)
@@ -651,7 +628,6 @@ class PickActionServer(Node):
                             'alignment_mode': 'sensor_scan_no_alignment',
                             'scan_trigger': 'object_present',
                             'scan_sensor_index': sensor_index,
-                            'scan_pre_position_m': round(pre_scan_position_m, 4),
                             'scan_target_position_m': round(
                                 scan_target_position_m, 4
                             ),
@@ -704,7 +680,6 @@ class PickActionServer(Node):
                             'alignment_mode': 'sensor_scan_no_alignment',
                             'scan_trigger': 'jump',
                             'scan_sensor_index': sensor_index,
-                            'scan_pre_position_m': round(pre_scan_position_m, 4),
                             'scan_target_position_m': round(
                                 scan_target_position_m, 4
                             ),

@@ -69,9 +69,10 @@ class PickActionServer(Node):
         self.declare_parameter('scan_jump_threshold_mm', 80.0)
         self.declare_parameter('scan_present_threshold_mm', 250.0)
         self.declare_parameter('scan_present_duration_s', 0.2)
-        self.declare_parameter('debug_pre_scan_position_m', 0.45)
-        self.declare_parameter('debug_scan_target_position_m', 0.1)
+        self.declare_parameter('debug_pre_scan_position_m', 0.01)
+        self.declare_parameter('debug_scan_target_position_m', 0.5)
         self.declare_parameter('scan_prepare_length_m', 0.05)
+        self.declare_parameter('scan_home_speed_rpm', 160.0)
         self.declare_parameter('scan_prepare_speed_rpm', 30.0)
         self.declare_parameter('scan_center_extra_time_s', 0.25)
         self.declare_parameter('scan_timeout_s', 5.0)
@@ -252,6 +253,10 @@ class PickActionServer(Node):
                     return True
             time.sleep(0.05)
         return False
+
+    def _clear_recognition(self) -> None:
+        with self._recognition_lock:
+            self._latest_recognition = None
 
     def _pick_best_target(self) -> tuple[int, float, float]:
         with self._recognition_lock:
@@ -524,7 +529,8 @@ class PickActionServer(Node):
         scan_target_position_m = float(
             self.get_parameter('debug_scan_target_position_m').value
         )
-        speed_rpm = float(self.get_parameter('scan_prepare_speed_rpm').value)
+        home_speed_rpm = float(self.get_parameter('scan_home_speed_rpm').value)
+        scan_speed_rpm = float(self.get_parameter('scan_prepare_speed_rpm').value)
         present_threshold_mm = float(
             self.get_parameter('scan_present_threshold_mm').value
         )
@@ -548,7 +554,8 @@ class PickActionServer(Node):
             sensor_index=sensor_index,
             pre_scan_position_m=pre_scan_position_m,
             scan_target_position_m=scan_target_position_m,
-            speed_rpm=speed_rpm,
+            home_speed_rpm=home_speed_rpm,
+            scan_speed_rpm=scan_speed_rpm,
             present_threshold_mm=present_threshold_mm,
             present_duration_s=present_duration_s,
             enable_jump_trigger=enable_jump_trigger,
@@ -558,11 +565,11 @@ class PickActionServer(Node):
         )
         self.get_logger().info(
             'Sensor scan pre-position: prepare([%.4f, %.4f])'
-            % (pre_scan_position_m, speed_rpm)
+            % (pre_scan_position_m, home_speed_rpm)
         )
         if not self._call_tool_action(
             'prepare',
-            [pre_scan_position_m, speed_rpm],
+            [pre_scan_position_m, home_speed_rpm],
             prepare_timeout_ms,
         ):
             self.get_logger().error('Sensor scan pre-position failed')
@@ -572,11 +579,11 @@ class PickActionServer(Node):
 
         self.get_logger().info(
             'Sensor scan target: prepare([%.4f, %.4f])'
-            % (scan_target_position_m, speed_rpm)
+            % (scan_target_position_m, scan_speed_rpm)
         )
         future = self._start_tool_action_async(
             'prepare',
-            [scan_target_position_m, speed_rpm],
+            [scan_target_position_m, scan_speed_rpm],
         )
         if future is None:
             self._write_scan_debug_log('scan_target_start_failed')
@@ -950,6 +957,29 @@ class PickActionServer(Node):
                 float(projection_alignment['sensor_5_mm']),
             )
         else:
+            feedback('PRE_RECOGNITION_FORWARD')
+            sign_y = float(self.get_parameter('direction_sign_y').value)
+            fwd_speed = sign_y * float(
+                self.get_parameter('forward_speed_mps').value
+            )
+            fwd_duration = float(self.get_parameter('forward_duration_s').value)
+            self._publish_status(
+                'PRE_RECOGNITION_FORWARD',
+                0,
+                0.0,
+                0.0,
+                {'alignment_mode': 'lidar_recognition'},
+            )
+            self.get_logger().info(
+                'Pre-recognition forward: %.2f m/s for %.1f s'
+                % (fwd_speed, fwd_duration)
+            )
+            self._run_timed_publish(fwd_speed, fwd_duration, goal_handle)
+            if goal_handle.is_cancel_requested:
+                goal_handle.abort()
+                return PickSequence.Result(success=False, message='cancelled')
+
+            self._clear_recognition()
             if not self._wait_for_recognition(expected_count, timeout_s=10.0):
                 self.get_logger().error(
                     'Recognition failed (expected %d targets)' % expected_count

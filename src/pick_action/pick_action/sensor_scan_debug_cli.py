@@ -214,6 +214,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument('--debug-scan-target-position-m', type=float, default=float(_param(params, 'debug_scan_target_position_m', 0.1)))
     parser.add_argument('--debug-pre-scan-timeout-s', type=float, default=float(_param(params, 'prepare_timeout_ms', 20000)) / 1000.0)
     parser.add_argument('--scan-prepare-length-m', type=float, default=float(_param(params, 'scan_prepare_length_m', 0.05)))
+    parser.add_argument('--scan-home-speed-rpm', type=float, default=float(_param(params, 'scan_home_speed_rpm', 160.0)))
     parser.add_argument('--scan-prepare-speed-rpm', type=float, default=float(_param(params, 'scan_prepare_speed_rpm', 30.0)))
     parser.add_argument('--scan-center-extra-time-s', type=float, default=float(_param(params, 'scan_center_extra_time_s', 0.05)))
     parser.add_argument('--scan-timeout-s', type=float, default=float(_param(params, 'scan_timeout_s', 5.0)))
@@ -241,7 +242,7 @@ def _print_config(args: argparse.Namespace) -> None:
     print('  tool_service = %s' % args.tool_service)
     print('  pre-scan position = prepare([%.4f, %.4f, 0.0, 0.0])' % (
         args.debug_pre_scan_position_m,
-        args.scan_prepare_speed_rpm,
+        args.scan_home_speed_rpm,
     ))
     print('  scan target = prepare([%.4f, %.4f, 0.0, 0.0])' % (
         args.debug_scan_target_position_m,
@@ -378,7 +379,7 @@ def _run_debug_flow(node: SensorScanDebugCli) -> None:
 
     if not node.call_tool(
         'prepare',
-        [args.debug_pre_scan_position_m, args.scan_prepare_speed_rpm],
+        [args.debug_pre_scan_position_m, args.scan_home_speed_rpm],
         args.debug_pre_scan_timeout_s,
     ):
         print('预定位失败，本轮不继续。')

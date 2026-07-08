@@ -54,7 +54,7 @@ pick_action_server:
     scan_jump_threshold_mm: 300.0
     scan_present_threshold_mm: 300.0
     scan_present_duration_s: 0.05
-    debug_pre_scan_position_m: 0.01
+    debug_pre_scan_position_m: 0.05
     debug_scan_target_position_m: 0.5
     scan_prepare_length_m: 0.05
     scan_home_speed_rpm: 160.0

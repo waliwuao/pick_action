@@ -57,7 +57,7 @@ pick_action_server:
     debug_pre_scan_position_m: 0.1
     debug_scan_target_position_m: 0.5
     scan_prepare_length_m: 0.05
-    scan_home_speed_rpm: 160.0
+    scan_home_speed_rpm: 100.0
     scan_prepare_speed_rpm: 80.0
     scan_center_extra_time_s: 0.0
     scan_timeout_s: 5.0

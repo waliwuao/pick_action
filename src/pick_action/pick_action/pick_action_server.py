@@ -110,6 +110,9 @@ class PickActionServer(Node):
         self._pose_lock = threading.Lock()
         self._callback_group = ReentrantCallbackGroup()
         self._active_scan_debug_id: str | None = None
+        self._active_goal_condition = threading.Condition()
+        self._active_goal_running = False
+        self._last_active_goal_result: tuple[bool, str] | None = None
 
         self._chassis_pub = self.create_publisher(
             Float32MultiArray,
@@ -845,6 +848,56 @@ class PickActionServer(Node):
             )
 
     def _execute_callback(self, goal_handle) -> PickSequence.Result:
+        with self._active_goal_condition:
+            if self._active_goal_running:
+                self.get_logger().warn(
+                    'Joining active pick sequence instead of starting another one'
+                )
+                while self._active_goal_running:
+                    if goal_handle.is_cancel_requested:
+                        goal_handle.abort()
+                        return PickSequence.Result(
+                            success=False,
+                            message='cancelled while waiting for active pick',
+                        )
+                    self._active_goal_condition.wait(timeout=0.1)
+
+                success, message = self._last_active_goal_result or (
+                    False,
+                    'active pick sequence ended without result',
+                )
+                if success:
+                    goal_handle.succeed()
+                else:
+                    goal_handle.abort()
+                return PickSequence.Result(
+                    success=success,
+                    message='Joined active pick sequence: %s' % message,
+                )
+
+            self._active_goal_running = True
+            self._last_active_goal_result = None
+
+        result = None
+        try:
+            result = self._execute_pick_sequence(goal_handle)
+            return result
+        finally:
+            with self._active_goal_condition:
+                if result is None:
+                    self._last_active_goal_result = (
+                        False,
+                        'active pick sequence ended without result',
+                    )
+                else:
+                    self._last_active_goal_result = (
+                        bool(result.success),
+                        str(result.message),
+                    )
+                self._active_goal_running = False
+                self._active_goal_condition.notify_all()
+
+    def _execute_pick_sequence(self, goal_handle) -> PickSequence.Result:
         expected_count = goal_handle.request.expected_count
         start_time = time.monotonic()
         use_projection = self._uses_odin_sensor_projection()

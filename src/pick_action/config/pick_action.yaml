@@ -11,8 +11,8 @@ pick_action_server:
     alignment_mode: sensor_scan_no_alignment
     result_topic: /spear_recognition/result
     tool_service: /ares_tool_node/tool_action
-    chassis_topic: /t0x0111_pick
-    lift_topic: /t0x0112_pick
+    chassis_topic: /t0x0111_
+    lift_topic: /t0x0112_
     status_topic: /pick_action/status
 
     # ---- Odin + sensor projection mode ----
@@ -63,6 +63,7 @@ pick_action_server:
     scan_stop_action: prepare
     scan_stop_args: [0.0, 0.0]
     scan_stop_timeout_ms: 3000
+    scan_stop_to_grasp_delay_s: 0.2
     scan_debug_log_path: /tmp/pick_action_sensor_scan_debug.jsonl
 
     # ---- Forward approach ----
@@ -72,6 +73,7 @@ pick_action_server:
 
     # ---- Grasp ----
     grasp_timeout_ms: 15000
+    grasp_retry_delay_s: 0.1
 
     # ---- Lift / Lower (one-shot position commands, units: mm) ----
     lift_height_mm: [70.0, 70.0, 70.0, 70.0]

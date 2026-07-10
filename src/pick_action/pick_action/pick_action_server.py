@@ -9,6 +9,7 @@ import math
 import os
 import threading
 import time
+from dataclasses import dataclass
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -24,6 +25,20 @@ from .pose_alignment import (
 )
 from pick_action_interfaces.action import PickSequence
 from r2_interfaces.srv import ToolAction
+
+
+@dataclass
+class ToolCallResult:
+    success: bool
+    action: str
+    detail: str
+    ret: int | None = None
+    message: str = ''
+    timeout_s: float | None = None
+    timed_out: bool = False
+
+    def __bool__(self) -> bool:
+        return self.success
 
 
 class PickActionServer(Node):
@@ -78,6 +93,7 @@ class PickActionServer(Node):
         self.declare_parameter('scan_stop_action', 'prepare')
         self.declare_parameter('scan_stop_args', [0.0, 0.0])
         self.declare_parameter('scan_stop_timeout_ms', 3000)
+        self.declare_parameter('scan_stop_to_grasp_delay_s', 0.2)
         self.declare_parameter(
             'scan_debug_log_path',
             '/tmp/pick_action_sensor_scan_debug.jsonl',
@@ -88,6 +104,7 @@ class PickActionServer(Node):
         self.declare_parameter('direction_sign_y', -1.0)
 
         self.declare_parameter('grasp_timeout_ms', 15000)
+        self.declare_parameter('grasp_retry_delay_s', 0.1)
 
         self.declare_parameter('lift_height_mm', [70.0, 70.0, 70.0, 70.0])
         self.declare_parameter('lower_height_mm', [20.0, 20.0, 20.0, 20.0])
@@ -355,15 +372,19 @@ class PickActionServer(Node):
         return None
 
     def _call_tool_action(self, action: str, args: list[float],
-                          timeout_ms: float) -> bool:
+                          timeout_ms: float) -> ToolCallResult:
         if not self._ensure_tool_available():
-            self.get_logger().error('Tool service unavailable')
+            detail = (
+                'Tool service unavailable: service=%s wait_timeout=3.0s'
+                % self.get_parameter('tool_service').value
+            )
+            self.get_logger().error(detail)
             self._write_scan_debug_log(
                 'tool_unavailable',
                 action=action,
                 args=args,
             )
-            return False
+            return ToolCallResult(False, action, detail)
 
         req = ToolAction.Request()
         req.action = action
@@ -385,22 +406,22 @@ class PickActionServer(Node):
             try:
                 r = future.result()
             except Exception as exc:
-                self.get_logger().error(
-                    'Tool %s raised exception: %s' % (action, exc)
-                )
+                detail = 'Tool %s raised exception: %s' % (action, exc)
+                self.get_logger().error(detail)
                 self._write_scan_debug_log(
                     'tool_call_exception',
                     action=action,
                     error=str(exc),
                 )
-                return False
+                return ToolCallResult(False, action, detail)
             if r is None:
-                self.get_logger().error('Tool %s returned no result' % action)
+                detail = 'Tool %s returned no result' % action
+                self.get_logger().error(detail)
                 self._write_scan_debug_log(
                     'tool_call_no_result',
                     action=action,
                 )
-                return False
+                return ToolCallResult(False, action, detail)
             self._write_scan_debug_log(
                 'tool_call_result',
                 action=action,
@@ -410,19 +431,82 @@ class PickActionServer(Node):
             )
             if r.success:
                 self.get_logger().info('Tool %s completed' % action)
-                return True
-            self.get_logger().warn(
-                'Tool %s failed: ret=%d msg="%s"'
-                % (action, r.ret, r.message)
+                return ToolCallResult(
+                    True,
+                    action,
+                    'Tool %s completed' % action,
+                    ret=int(r.ret),
+                    message=str(r.message),
+                    timeout_s=timeout_s,
+                )
+            detail = (
+                'Tool %s failed: ret=%d msg="%s" timeout=%.3fs args=%s'
+                % (action, r.ret, r.message, timeout_s, list(req.args))
             )
-            return False
-        self.get_logger().error('Tool %s timed out (%.1f s)' % (action, timeout_s))
+            self.get_logger().warn(detail)
+            return ToolCallResult(
+                False,
+                action,
+                detail,
+                ret=int(r.ret),
+                message=str(r.message),
+                timeout_s=timeout_s,
+            )
+        detail = (
+            'Tool %s timed out after %.3fs waiting for response; args=%s'
+            % (action, timeout_s, list(req.args))
+        )
+        self.get_logger().error(detail)
         self._write_scan_debug_log(
             'tool_call_timeout',
             action=action,
             timeout_s=timeout_s,
         )
-        return False
+        return ToolCallResult(
+            False,
+            action,
+            detail,
+            timeout_s=timeout_s,
+            timed_out=True,
+        )
+
+    def _call_grasp_with_optional_retry(
+        self,
+        timeout_ms: float,
+        retry_on_timeout: bool,
+    ) -> ToolCallResult:
+        first = self._call_tool_action('grasp', [0.0], timeout_ms)
+        if first:
+            return first
+        if not retry_on_timeout or not first.timed_out:
+            return first
+
+        retry_delay_s = float(self.get_parameter('grasp_retry_delay_s').value)
+        self.get_logger().warn(
+            'Grasp timed out; retrying once after %.3f s. First failure: %s'
+            % (retry_delay_s, first.detail)
+        )
+        self._write_scan_debug_log(
+            'grasp_retry_after_timeout',
+            retry_delay_s=retry_delay_s,
+            first_failure=first.detail,
+        )
+        time.sleep(retry_delay_s)
+
+        second = self._call_tool_action('grasp', [0.0], timeout_ms)
+        if second:
+            return second
+
+        return ToolCallResult(
+            False,
+            'grasp',
+            'grasp failed after one retry; first="%s"; second="%s"'
+            % (first.detail, second.detail),
+            ret=second.ret,
+            message=second.message,
+            timeout_s=second.timeout_s,
+            timed_out=second.timed_out,
+        )
 
     def _start_tool_action_async(self, action: str, args: list[float]):
         if not self._ensure_tool_available():
@@ -1044,7 +1128,24 @@ class PickActionServer(Node):
                 goal_handle.abort()
                 return PickSequence.Result(
                     success=False,
-                    message='sensor scan failed or timed out',
+                    message=(
+                        'sensor scan failed or timed out; check '
+                        'scan_debug_log_path=%s for sensor samples and tool '
+                        'stop result'
+                    ) % self.get_parameter('scan_debug_log_path').value,
+                )
+            if not bool(sensor_scan_result.get('scan_stop_success', False)):
+                goal_handle.abort()
+                return PickSequence.Result(
+                    success=False,
+                    message=(
+                        'sensor scan detected target but failed to stop scan '
+                        'motion; stop_action=%s stop_args=%s timeout_ms=%.1f'
+                    ) % (
+                        self.get_parameter('scan_stop_action').value,
+                        list(self.get_parameter('scan_stop_args').value),
+                        float(self.get_parameter('scan_stop_timeout_ms').value),
+                    ),
                 )
             self._publish_status(
                 'SENSOR_SCAN',
@@ -1092,10 +1193,17 @@ class PickActionServer(Node):
                 prepare_timeout = float(
                     self.get_parameter('prepare_timeout_ms').value
                 )
-                if not self._call_tool_action('prepare', [length], prepare_timeout):
+                prepare_result = self._call_tool_action(
+                    'prepare',
+                    [length],
+                    prepare_timeout,
+                )
+                if not prepare_result:
                     goal_handle.abort()
                     return PickSequence.Result(
-                        success=False, message='prepare failed (ALIGN_X)'
+                        success=False,
+                        message='prepare failed (ALIGN_X): %s'
+                                % prepare_result.detail,
                     )
             else:
                 self.get_logger().info(
@@ -1163,10 +1271,34 @@ class PickActionServer(Node):
         self.get_logger().info('Grasping...')
         self._publish_status('GRASP', tid, x_m, y_m)
         grasp_timeout = float(self.get_parameter('grasp_timeout_ms').value)
-        if not self._call_tool_action('grasp', [0.0], grasp_timeout):
+        retry_grasp = (
+            use_sensor_scan
+            and sensor_scan_result is not None
+            and bool(sensor_scan_result.get('scan_stop_success', False))
+        )
+        if retry_grasp:
+            delay_s = float(
+                self.get_parameter('scan_stop_to_grasp_delay_s').value
+            )
+            self.get_logger().info(
+                'Sensor scan stopped successfully; delaying %.3f s before grasp'
+                % delay_s
+            )
+            self._write_scan_debug_log(
+                'scan_stop_to_grasp_delay',
+                delay_s=delay_s,
+            )
+            time.sleep(delay_s)
+
+        grasp_result = self._call_grasp_with_optional_retry(
+            grasp_timeout,
+            retry_on_timeout=retry_grasp,
+        )
+        if not grasp_result:
             goal_handle.abort()
             return PickSequence.Result(
-                success=False, message='grasp failed'
+                success=False,
+                message='grasp failed: %s' % grasp_result.detail,
             )
 
         if goal_handle.is_cancel_requested:

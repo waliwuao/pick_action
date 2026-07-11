@@ -312,7 +312,7 @@ FORWARD -> GRASP -> LIFT -> RETREAT -> LOWER -> DONE
 
 ```yaml
 forward_speed_mps: 0.2
-forward_duration_s: 1.8
+forward_duration_s: 1.0
 direction_sign_y: -1.0
 grasp_timeout_ms: 15000
 lift_height_mm: [70.0, 70.0, 70.0, 70.0]
@@ -378,25 +378,28 @@ SENSOR_SCAN:
 FORWARD -> GRASP -> LIFT -> RETREAT -> LOWER -> DONE
 ```
 
+在 `sensor_scan_no_alignment` 模式下，如果扫描已检测到目标并成功停止慢移，进入 `GRASP` 前会先等待 `scan_stop_to_grasp_delay_s`。如果第一次 `grasp` 返回超时，会等待 `grasp_retry_delay_s` 后只重试一次；第二次仍失败则本次 action 失败。
+
 相关参数：
 
 ```yaml
 scan_sensor_index: 1
 scan_sensor_max_age_s: 0.5
-scan_min_valid_mm: 20.0
-scan_max_valid_mm: 2000.0
+scan_enable_jump_trigger: false
 scan_jump_threshold_mm: 300.0
-scan_present_threshold_mm: 150.0
-scan_present_duration_s: 0.1
+scan_present_threshold_mm: 300.0
+scan_present_duration_s: 0.02
 debug_scan_target_position_m: 0.45
 scan_prepare_length_m: 0.05
-scan_prepare_speed_rpm: 30.0
-scan_center_extra_time_s: 0.05
+scan_prepare_speed_rpm: 100.0
+scan_center_extra_time_s: 0.0
 scan_timeout_s: 5.0
 scan_sample_period_s: 0.02
 scan_stop_action: prepare
 scan_stop_args: [0.0, 0.0]
 scan_stop_timeout_ms: 3000
+scan_stop_to_grasp_delay_s: 0.2
+grasp_retry_delay_s: 0.1
 ```
 
 含义：
@@ -404,6 +407,7 @@ scan_stop_timeout_ms: 3000
 | 参数 | 含义 |
 |---|---|
 | `scan_sensor_index` | 用哪个单点测距值扫描，默认 `1` |
+| `scan_enable_jump_trigger` | 是否启用相邻距离突变触发；默认关闭 |
 | `scan_jump_threshold_mm` | 相邻有效距离突变阈值，单位 mm |
 | `scan_present_threshold_mm` | 已在物体前方的距离阈值，单位 mm |
 | `scan_present_duration_s` | 测距持续低于阈值多久后直接触发后续动作 |
@@ -414,6 +418,8 @@ scan_stop_timeout_ms: 3000
 | `scan_stop_action` | 停止持续慢移的 spear 命令，默认 `prepare` |
 | `scan_stop_args` | 停止命令参数，默认 `[0.0, 0.0]`，表示停止水平慢移 |
 | `scan_timeout_s` | 最长扫描时间，超时则本次 action 失败 |
+| `scan_stop_to_grasp_delay_s` | 扫描检测到目标并成功停止后，进入 `grasp` 前等待多久 |
+| `grasp_retry_delay_s` | 第一次 `grasp` 返回超时时，重试前等待多久；只重试一次 |
 
 ## 四种模式状态对比
 
@@ -440,10 +446,11 @@ lift_topic: /t0x0112_
 status_topic: /pick_action/status
 
 forward_speed_mps: 0.2
-forward_duration_s: 1.8
+forward_duration_s: 1.0
 direction_sign_y: -1.0
 
 grasp_timeout_ms: 15000
+grasp_retry_delay_s: 0.1
 
 lift_height_mm: [70.0, 70.0, 70.0, 70.0]
 lower_height_mm: [28.0, 28.0, 28.0, 28.0]
@@ -453,6 +460,36 @@ retreat_duration_s: 1.0
 
 publish_rate_hz: 100.0
 ```
+
+`grasp` 超时重试说明：
+
+```text
+第一次 grasp 成功 -> 继续 LIFT
+第一次 grasp 失败且不是超时 -> action 失败
+第一次 grasp 返回超时 -> 等待 grasp_retry_delay_s 后再发一次 grasp
+第二次 grasp 成功 -> 继续 LIFT
+第二次 grasp 失败 -> action 失败，不再重试
+```
+
+超时判断包括客户端等待 service 响应超时、服务返回 `ret == -ETIMEDOUT`，以及返回消息中包含 `timeout` / `timed out` / `time out` / `超时`。
+
+## 调试日志
+
+工具调用详细日志可通过参数开关控制：
+
+```yaml
+tool_debug_log_enabled: true
+tool_debug_log_path: pick_action_tool_debug.jsonl
+```
+
+说明：
+
+| 参数 | 含义 |
+|---|---|
+| `tool_debug_log_enabled` | 调试时设为 `true` 写入工具调用日志；比赛时可设为 `false`，避免文件 I/O |
+| `tool_debug_log_path` | 工具调用日志文件路径；相对路径会写到启动节点时的当前工作目录 |
+
+日志内容是 JSONL，每一行是一条工具调用事件，包含 `action`、`args`、`success`、`ret`、`message`、`timeout_s`、`timed_out` 和 `detail` 等字段。即使关闭文件日志，节点仍会在内存中保留最近一次工具调用结果，用于判断 `grasp` 是否需要超时重试。
 
 ## Topic 和 Service
 

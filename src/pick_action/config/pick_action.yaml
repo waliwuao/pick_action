@@ -65,6 +65,8 @@ pick_action_server:
     scan_stop_timeout_ms: 3000
     scan_stop_to_grasp_delay_s: 0.2
     scan_debug_log_path: /tmp/pick_action_sensor_scan_debug.jsonl
+    tool_debug_log_enabled: true
+    tool_debug_log_path: pick_action_tool_debug.jsonl
 
     # ---- Forward approach ----
     forward_speed_mps: 0.2

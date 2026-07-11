@@ -4,12 +4,12 @@ Orchestrates LiDAR recognition → X-alignment (prepare) → forward approach �
 grasp → lift → retreat → lower.
 """
 
+import errno
 import json
 import math
 import os
 import threading
 import time
-from dataclasses import dataclass
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -25,20 +25,6 @@ from .pose_alignment import (
 )
 from pick_action_interfaces.action import PickSequence
 from r2_interfaces.srv import ToolAction
-
-
-@dataclass
-class ToolCallResult:
-    success: bool
-    action: str
-    detail: str
-    ret: int | None = None
-    message: str = ''
-    timeout_s: float | None = None
-    timed_out: bool = False
-
-    def __bool__(self) -> bool:
-        return self.success
 
 
 class PickActionServer(Node):
@@ -98,6 +84,11 @@ class PickActionServer(Node):
             'scan_debug_log_path',
             '/tmp/pick_action_sensor_scan_debug.jsonl',
         )
+        self.declare_parameter('tool_debug_log_enabled', True)
+        self.declare_parameter(
+            'tool_debug_log_path',
+            'pick_action_tool_debug.jsonl',
+        )
 
         self.declare_parameter('forward_speed_mps', 0.2)
         self.declare_parameter('forward_duration_s', 2.0)
@@ -130,6 +121,7 @@ class PickActionServer(Node):
         self._active_goal_condition = threading.Condition()
         self._active_goal_running = False
         self._last_active_goal_result: tuple[bool, str] | None = None
+        self._last_tool_call: dict | None = None
 
         self._chassis_pub = self.create_publisher(
             Float32MultiArray,
@@ -372,25 +364,38 @@ class PickActionServer(Node):
         return None
 
     def _call_tool_action(self, action: str, args: list[float],
-                          timeout_ms: float) -> ToolCallResult:
+                          timeout_ms: float) -> bool:
         if not self._ensure_tool_available():
             detail = (
                 'Tool service unavailable: service=%s wait_timeout=3.0s'
                 % self.get_parameter('tool_service').value
             )
             self.get_logger().error(detail)
+            self._record_tool_call(
+                'tool_unavailable',
+                action=action,
+                args=args,
+                success=False,
+                detail=detail,
+            )
             self._write_scan_debug_log(
                 'tool_unavailable',
                 action=action,
                 args=args,
             )
-            return ToolCallResult(False, action, detail)
+            return False
 
         req = ToolAction.Request()
         req.action = action
         req.args = args[:4] + [0.0] * max(0, 4 - len(args))
 
         timeout_s = timeout_ms / 1000.0
+        self._record_tool_call(
+            'tool_call_start',
+            action=action,
+            args=list(req.args),
+            timeout_s=timeout_s,
+        )
         self._write_scan_debug_log(
             'tool_call_start',
             action=action,
@@ -408,20 +413,41 @@ class PickActionServer(Node):
             except Exception as exc:
                 detail = 'Tool %s raised exception: %s' % (action, exc)
                 self.get_logger().error(detail)
+                self._record_tool_call(
+                    'tool_call_exception',
+                    action=action,
+                    args=list(req.args),
+                    success=False,
+                    detail=detail,
+                    error=str(exc),
+                    timeout_s=timeout_s,
+                )
                 self._write_scan_debug_log(
                     'tool_call_exception',
                     action=action,
                     error=str(exc),
                 )
-                return ToolCallResult(False, action, detail)
+                return False
             if r is None:
                 detail = 'Tool %s returned no result' % action
                 self.get_logger().error(detail)
+                self._record_tool_call(
+                    'tool_call_no_result',
+                    action=action,
+                    args=list(req.args),
+                    success=False,
+                    detail=detail,
+                    timeout_s=timeout_s,
+                )
                 self._write_scan_debug_log(
                     'tool_call_no_result',
                     action=action,
                 )
-                return ToolCallResult(False, action, detail)
+                return False
+            response_timed_out = self._is_tool_timeout_response(
+                int(r.ret),
+                str(r.message),
+            )
             self._write_scan_debug_log(
                 'tool_call_result',
                 action=action,
@@ -431,65 +457,135 @@ class PickActionServer(Node):
             )
             if r.success:
                 self.get_logger().info('Tool %s completed' % action)
-                return ToolCallResult(
-                    True,
-                    action,
-                    'Tool %s completed' % action,
+                self._record_tool_call(
+                    'tool_call_result',
+                    action=action,
+                    args=list(req.args),
+                    success=True,
+                    detail='Tool %s completed' % action,
                     ret=int(r.ret),
                     message=str(r.message),
                     timeout_s=timeout_s,
+                    timed_out=response_timed_out,
                 )
+                return True
             detail = (
                 'Tool %s failed: ret=%d msg="%s" timeout=%.3fs args=%s'
                 % (action, r.ret, r.message, timeout_s, list(req.args))
             )
             self.get_logger().warn(detail)
-            return ToolCallResult(
-                False,
-                action,
-                detail,
+            self._record_tool_call(
+                'tool_call_result',
+                action=action,
+                args=list(req.args),
+                success=False,
+                detail=detail,
                 ret=int(r.ret),
                 message=str(r.message),
                 timeout_s=timeout_s,
+                timed_out=response_timed_out,
             )
+            return False
         detail = (
             'Tool %s timed out after %.3fs waiting for response; args=%s'
             % (action, timeout_s, list(req.args))
         )
         self.get_logger().error(detail)
+        self._record_tool_call(
+            'tool_call_timeout',
+            action=action,
+            args=list(req.args),
+            success=False,
+            detail=detail,
+            timeout_s=timeout_s,
+            timed_out=True,
+        )
         self._write_scan_debug_log(
             'tool_call_timeout',
             action=action,
             timeout_s=timeout_s,
         )
-        return ToolCallResult(
-            False,
-            action,
-            detail,
-            timeout_s=timeout_s,
-            timed_out=True,
+        return False
+
+    def _is_tool_timeout_response(self, ret: int, message: str) -> bool:
+        text = message.lower()
+        return (
+            ret == -errno.ETIMEDOUT
+            or 'timeout' in text
+            or 'timed out' in text
+            or 'time out' in text
+            or '超时' in message
         )
+
+    def _record_tool_call(self, event: str, **fields) -> None:
+        if not bool(self.get_parameter('tool_debug_log_enabled').value):
+            self._last_tool_call = {'event': event, **fields}
+            return
+
+        record = {
+            'stamp_s': self._json_safe(self._now_sec()),
+            'monotonic_s': self._json_safe(time.monotonic()),
+            'event': event,
+        }
+        record.update({
+            key: self._json_safe(value)
+            for key, value in fields.items()
+        })
+        self._last_tool_call = record
+
+        path = str(self.get_parameter('tool_debug_log_path').value)
+        if not path:
+            return
+        try:
+            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+            with open(path, 'a', encoding='utf-8') as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + '\n')
+        except OSError as exc:
+            self.get_logger().warn(
+                'Failed to write tool debug log %s: %s' % (path, exc)
+            )
+
+    def _last_tool_timed_out(self, action: str) -> bool:
+        return bool(
+            self._last_tool_call
+            and self._last_tool_call.get('action') == action
+            and self._last_tool_call.get('timed_out')
+        )
+
+    def _last_tool_detail(self, action: str) -> str:
+        if not self._last_tool_call:
+            return ''
+        if self._last_tool_call.get('action') != action:
+            return ''
+        return str(self._last_tool_call.get('detail', ''))
 
     def _call_grasp_with_optional_retry(
         self,
         timeout_ms: float,
         retry_on_timeout: bool,
-    ) -> ToolCallResult:
+    ) -> bool:
         first = self._call_tool_action('grasp', [0.0], timeout_ms)
         if first:
             return first
-        if not retry_on_timeout or not first.timed_out:
+        first_detail = self._last_tool_detail('grasp')
+        if not retry_on_timeout or not self._last_tool_timed_out('grasp'):
             return first
 
         retry_delay_s = float(self.get_parameter('grasp_retry_delay_s').value)
         self.get_logger().warn(
             'Grasp timed out; retrying once after %.3f s. First failure: %s'
-            % (retry_delay_s, first.detail)
+            % (retry_delay_s, first_detail)
+        )
+        self._record_tool_call(
+            'grasp_retry_after_timeout',
+            action='grasp',
+            retry_delay_s=retry_delay_s,
+            first_failure=first_detail,
         )
         self._write_scan_debug_log(
             'grasp_retry_after_timeout',
             retry_delay_s=retry_delay_s,
-            first_failure=first.detail,
+            first_failure=first_detail,
         )
         time.sleep(retry_delay_s)
 
@@ -497,20 +593,33 @@ class PickActionServer(Node):
         if second:
             return second
 
-        return ToolCallResult(
-            False,
-            'grasp',
-            'grasp failed after one retry; first="%s"; second="%s"'
-            % (first.detail, second.detail),
-            ret=second.ret,
-            message=second.message,
-            timeout_s=second.timeout_s,
-            timed_out=second.timed_out,
+        second_detail = self._last_tool_detail('grasp')
+        self._record_tool_call(
+            'grasp_retry_failed',
+            action='grasp',
+            success=False,
+            detail='grasp failed after one retry; first="%s"; second="%s"'
+                   % (first_detail, second_detail),
+            first_failure=first_detail,
+            second_failure=second_detail,
         )
+        return False
 
     def _start_tool_action_async(self, action: str, args: list[float]):
         if not self._ensure_tool_available():
-            self.get_logger().error('Tool service unavailable')
+            detail = (
+                'Tool service unavailable: service=%s wait_timeout=3.0s'
+                % self.get_parameter('tool_service').value
+            )
+            self.get_logger().error(detail)
+            self._record_tool_call(
+                'tool_unavailable',
+                action=action,
+                args=args,
+                success=False,
+                detail=detail,
+                async_call=True,
+            )
             self._write_scan_debug_log(
                 'tool_unavailable',
                 action=action,
@@ -524,6 +633,12 @@ class PickActionServer(Node):
         req.args = args[:4] + [0.0] * max(0, 4 - len(args))
         self.get_logger().info(
             'Starting tool %s asynchronously: args=%s' % (action, req.args)
+        )
+        self._record_tool_call(
+            'tool_async_start',
+            action=action,
+            args=list(req.args),
+            async_call=True,
         )
         self._write_scan_debug_log(
             'tool_async_start',
@@ -565,7 +680,7 @@ class PickActionServer(Node):
             'Stopping sensor scan with tool %s args=%s'
             % (stop_action, stop_args)
         )
-        return bool(self._call_tool_action(stop_action, stop_args, stop_timeout))
+        return self._call_tool_action(stop_action, stop_args, stop_timeout)
 
     def _json_safe(self, value):
         if isinstance(value, float):
@@ -660,6 +775,8 @@ class PickActionServer(Node):
         previous_age_s = math.inf
         sample_count = 0
         stopped = False
+        stop_detail = ''
+        scan_result = None
 
         try:
             while time.monotonic() - start_s < timeout_s:
@@ -700,6 +817,9 @@ class PickActionServer(Node):
                             )
                         )
                         stopped = self._stop_scan_motion()
+                        stop_detail = self._last_tool_detail(
+                            str(self.get_parameter('scan_stop_action').value)
+                        )
                         self._write_scan_debug_log(
                             'scan_trigger',
                             trigger='object_present',
@@ -710,8 +830,9 @@ class PickActionServer(Node):
                             elapsed_s=scan_elapsed_s,
                             sample_count=sample_count,
                             stop_success=stopped,
+                            stop_detail=stop_detail,
                         )
-                        return {
+                        scan_result = {
                             'alignment_mode': 'sensor_scan_no_alignment',
                             'scan_trigger': 'object_present',
                             'scan_sensor_index': sensor_index,
@@ -729,7 +850,9 @@ class PickActionServer(Node):
                             'scan_elapsed_s': round(scan_elapsed_s, 3),
                             'scan_sample_count': sample_count,
                             'scan_stop_success': stopped,
+                            'scan_stop_detail': stop_detail,
                         }
+                        return scan_result
                 else:
                     present_start_s = math.nan
 
@@ -751,6 +874,9 @@ class PickActionServer(Node):
                             )
                         )
                         stopped = self._stop_scan_motion()
+                        stop_detail = self._last_tool_detail(
+                            str(self.get_parameter('scan_stop_action').value)
+                        )
                         self._write_scan_debug_log(
                             'scan_trigger',
                             trigger='jump',
@@ -762,8 +888,9 @@ class PickActionServer(Node):
                             elapsed_s=scan_elapsed_s,
                             sample_count=sample_count,
                             stop_success=stopped,
+                            stop_detail=stop_detail,
                         )
-                        return {
+                        scan_result = {
                             'alignment_mode': 'sensor_scan_no_alignment',
                             'scan_trigger': 'jump',
                             'scan_sensor_index': sensor_index,
@@ -779,7 +906,9 @@ class PickActionServer(Node):
                             'scan_elapsed_s': round(scan_elapsed_s, 3),
                             'scan_sample_count': sample_count,
                             'scan_stop_success': stopped,
+                            'scan_stop_detail': stop_detail,
                         }
+                        return scan_result
 
                 self._write_scan_debug_log(
                     'scan_sample',
@@ -810,10 +939,19 @@ class PickActionServer(Node):
             return None
         finally:
             if not stopped:
-                stop_success = self._stop_scan_motion()
+                stopped = self._stop_scan_motion()
+                stop_detail = self._last_tool_detail(
+                    str(self.get_parameter('scan_stop_action').value)
+                )
+                if scan_result is not None:
+                    scan_result['scan_stop_success'] = stopped
+                    scan_result['scan_stop_detail'] = stop_detail
+                    scan_result['scan_final_stop_success'] = stopped
+                    scan_result['scan_final_stop_detail'] = stop_detail
                 self._write_scan_debug_log(
                     'scan_final_stop',
-                    stop_success=stop_success,
+                    stop_success=stopped,
+                    stop_detail=stop_detail,
                 )
             self._active_scan_debug_id = None
 
@@ -1140,11 +1278,13 @@ class PickActionServer(Node):
                     success=False,
                     message=(
                         'sensor scan detected target but failed to stop scan '
-                        'motion; stop_action=%s stop_args=%s timeout_ms=%.1f'
+                        'motion; stop_action=%s stop_args=%s timeout_ms=%.1f; '
+                        'detail=%s'
                     ) % (
                         self.get_parameter('scan_stop_action').value,
                         list(self.get_parameter('scan_stop_args').value),
                         float(self.get_parameter('scan_stop_timeout_ms').value),
+                        sensor_scan_result.get('scan_stop_detail', ''),
                     ),
                 )
             self._publish_status(
@@ -1199,11 +1339,16 @@ class PickActionServer(Node):
                     prepare_timeout,
                 )
                 if not prepare_result:
+                    prepare_detail = self._last_tool_detail('prepare')
                     goal_handle.abort()
                     return PickSequence.Result(
                         success=False,
-                        message='prepare failed (ALIGN_X): %s'
-                                % prepare_result.detail,
+                        message=(
+                            'prepare failed (ALIGN_X): %s; tool_debug_log=%s'
+                        ) % (
+                            prepare_detail,
+                            self.get_parameter('tool_debug_log_path').value,
+                        ),
                     )
             else:
                 self.get_logger().info(
@@ -1295,10 +1440,14 @@ class PickActionServer(Node):
             retry_on_timeout=retry_grasp,
         )
         if not grasp_result:
+            grasp_detail = self._last_tool_detail('grasp')
             goal_handle.abort()
             return PickSequence.Result(
                 success=False,
-                message='grasp failed: %s' % grasp_result.detail,
+                message='grasp failed: %s; tool_debug_log=%s' % (
+                    grasp_detail,
+                    self.get_parameter('tool_debug_log_path').value,
+                ),
             )
 
         if goal_handle.is_cancel_requested:

@@ -565,7 +565,7 @@ class PickActionServer(Node):
             'Stopping sensor scan with tool %s args=%s'
             % (stop_action, stop_args)
         )
-        return self._call_tool_action(stop_action, stop_args, stop_timeout)
+        return bool(self._call_tool_action(stop_action, stop_args, stop_timeout))
 
     def _json_safe(self, value):
         if isinstance(value, float):
@@ -852,7 +852,7 @@ class PickActionServer(Node):
         }
         if extra:
             payload.update(extra)
-        msg.data = json.dumps(payload, ensure_ascii=False)
+        msg.data = json.dumps(self._json_safe(payload), ensure_ascii=False)
         self._status_pub.publish(msg)
 
     def _projection_status_extra(self, alignment: dict | None) -> dict:

@@ -317,6 +317,7 @@ direction_sign_y: -1.0
 grasp_timeout_ms: 15000
 lift_height_mm: [70.0, 70.0, 70.0, 70.0]
 lower_height_mm: [28.0, 28.0, 28.0, 28.0]
+height_command_frames: 10
 retreat_speed_mps: 0.2
 retreat_duration_s: 1.0
 publish_rate_hz: 100.0
@@ -454,6 +455,7 @@ grasp_retry_delay_s: 0.1
 
 lift_height_mm: [70.0, 70.0, 70.0, 70.0]
 lower_height_mm: [28.0, 28.0, 28.0, 28.0]
+height_command_frames: 10
 
 retreat_speed_mps: 0.2
 retreat_duration_s: 1.0

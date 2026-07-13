@@ -99,6 +99,7 @@ class PickActionServer(Node):
 
         self.declare_parameter('lift_height_mm', [70.0, 70.0, 70.0, 70.0])
         self.declare_parameter('lower_height_mm', [20.0, 20.0, 20.0, 20.0])
+        self.declare_parameter('height_command_frames', 10)
 
         self.declare_parameter('retreat_speed_mps', 0.2)
         self.declare_parameter('retreat_duration_s', 2.0)
@@ -974,9 +975,15 @@ class PickActionServer(Node):
         self._chassis_pub.publish(msg)
 
     def _publish_height(self, heights: list[float]) -> None:
+        frame_count = int(self.get_parameter('height_command_frames').value)
+        frame_count = max(1, frame_count)
+        period = 1.0 / max(1.0, float(self.get_parameter('publish_rate_hz').value))
+
         msg = Float32MultiArray()
         msg.data = [float(h) for h in heights[:4]]
-        self._lift_pub.publish(msg)
+        for _ in range(frame_count):
+            self._lift_pub.publish(msg)
+            time.sleep(period)
 
     def _publish_status(self, state: str, target_id: int,
                         x_m: float, y_m: float,
@@ -1459,9 +1466,7 @@ class PickActionServer(Node):
         heights = [float(h) for h in self.get_parameter('lift_height_mm').value]
         self.get_logger().info('Lifting: %s' % heights)
         self._publish_status('LIFT', tid, x_m, y_m)
-        msg = Float32MultiArray()
-        msg.data = heights
-        self._lift_pub.publish(msg)
+        self._publish_height(heights)
         time.sleep(0.2)
 
         # ---- RETREAT ----
